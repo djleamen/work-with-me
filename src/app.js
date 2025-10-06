@@ -289,6 +289,15 @@ const chatMessages = document.getElementById('chatMessages');
 const chatInput = document.getElementById('chatInput');
 const sendButton = document.getElementById('sendMessage');
 
+function escapeHTML(str) {
+    return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
 function addMessage(content, isUser = false) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user-message' : 'ai-message'}`;
@@ -301,7 +310,7 @@ function addMessage(content, isUser = false) {
     contentDiv.className = 'message-content';
     
     if (typeof content === 'string') {
-        contentDiv.innerHTML = content.replace(/\n/g, '<br>');
+        contentDiv.innerHTML = escapeHTML(content).replace(/\n/g, '<br>');
     } else {
         contentDiv.appendChild(content);
     }
