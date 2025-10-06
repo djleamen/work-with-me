@@ -1,0 +1,22 @@
+{
+  "name": "work-with-me",
+  "version": "1.0.0",
+  "description": "AI-powered collaborative drawing web application for artists and students",
+  "main": "index.html",
+  "scripts": {
+    "start": "python3 -m http.server 8000",
+    "serve": "python3 -m http.server 8000"
+  },
+  "keywords": [
+    "drawing",
+    "ai",
+    "canvas",
+    "education",
+    "math",
+    "art",
+    "collaborative",
+    "interactive"
+  ],
+  "author": "djleamen",
+  "license": "MIT"
+}

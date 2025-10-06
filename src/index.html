@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Work With Me - AI Collaborative Drawing</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <h1>Work With Me</h1>
+            <p class="tagline">Draw, Learn, Create - Together with AI</p>
+        </header>
+
+        <div class="main-content">
+            <div class="toolbar">
+                <div class="toolbar-section">
+                    <h3>Tools</h3>
+                    <div class="tool-buttons">
+                        <button class="tool-btn active" data-tool="pen" title="Pen">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M12 19l7-7 3 3-7 7-3-3z"></path>
+                                <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"></path>
+                                <path d="M2 2l7.586 7.586"></path>
+                            </svg>
+                            <span>Pen</span>
+                        </button>
+                        <button class="tool-btn" data-tool="eraser" title="Eraser">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M20 20H7L3 16l8-8 6 6 3-3 1 1-3 3 2 2v3z"></path>
+                            </svg>
+                            <span>Eraser</span>
+                        </button>
+                        <button class="tool-btn" data-tool="fill" title="Fill">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <path d="M19 11H5l7-7 7 7z"></path>
+                                <path d="M5 11v10h14V11"></path>
+                                <circle cx="12" cy="16" r="2" fill="currentColor"></circle>
+                            </svg>
+                            <span>Fill</span>
+                        </button>
+                        <button class="tool-btn" data-tool="line" title="Line">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <line x1="5" y1="19" x2="19" y2="5" stroke-width="2"></line>
+                            </svg>
+                            <span>Line</span>
+                        </button>
+                        <button class="tool-btn" data-tool="circle" title="Circle">
+                            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                <circle cx="12" cy="12" r="8"></circle>
+                            </svg>
+                            <span>Circle</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="toolbar-section">
+                    <h3>Brush Size</h3>
+                    <label for="brushSize" class="visually-hidden">Brush size</label>
+                    <input type="range" id="brushSize" min="1" max="50" value="3" class="slider">
+                    <span id="brushSizeValue" class="value-display">3px</span>
+                </div>
+
+                <div class="toolbar-section">
+                    <h3>Color</h3>
+                    <div class="color-picker-container">
+                        <label for="colorPicker" class="visually-hidden">Select drawing color</label>
+                        <input type="color" id="colorPicker" value="#000000">
+                        <div class="preset-colors">
+                            <button class="color-preset color-black" data-color="#000000" title="Black"></button>
+                            <button class="color-preset color-red" data-color="#FF0000" title="Red"></button>
+                            <button class="color-preset color-green" data-color="#00FF00" title="Green"></button>
+                            <button class="color-preset color-blue" data-color="#0000FF" title="Blue"></button>
+                            <button class="color-preset color-yellow" data-color="#FFFF00" title="Yellow"></button>
+                            <button class="color-preset color-magenta" data-color="#FF00FF" title="Magenta"></button>
+                            <button class="color-preset color-cyan" data-color="#00FFFF" title="Cyan"></button>
+                            <button class="color-preset color-white" data-color="#FFFFFF" title="White"></button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="toolbar-section">
+                    <h3>Actions</h3>
+                    <button class="action-btn" id="clearCanvas">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                        Clear Canvas
+                    </button>
+                    <button class="action-btn" id="undo">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M3 7v6h6"></path>
+                            <path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"></path>
+                        </svg>
+                        Undo
+                    </button>
+                    <button class="action-btn" id="saveImage">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                            <polyline points="7 3 7 8 15 8"></polyline>
+                        </svg>
+                        Save
+                    </button>
+                </div>
+
+                <div class="toolbar-section">
+                    <h3>AI Assistant</h3>
+                    <button class="action-btn ai-btn" id="toggleAI">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
+                        </svg>
+                        <span id="aiStatus">AI: Ready</span>
+                    </button>
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="aiCollaborate" checked>
+                        <span>AI can draw</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="canvas-container">
+                <canvas id="drawingCanvas"></canvas>
+                <div class="canvas-info">
+                    <span id="cursorPosition">X: 0, Y: 0</span>
+                </div>
+            </div>
+
+            <div class="chat-panel">
+                <div class="chat-header">
+                    <h3>💬 AI Assistant</h3>
+                    <button id="toggleChat" class="toggle-chat-btn">−</button>
+                </div>
+                <div class="chat-messages" id="chatMessages">
+                    <div class="message ai-message">
+                        <div class="message-avatar">🤖</div>
+                        <div class="message-content">
+                            <p>Hi! I'm your AI drawing assistant. I can:</p>
+                            <ul>
+                                <li>Help you with drawing techniques</li>
+                                <li>Solve math equations visually</li>
+                                <li>Draw alongside you</li>
+                                <li>Provide real-time feedback</li>
+                                <li>Suggest improvements</li>
+                            </ul>
+                            <p>Start drawing, and I'll watch and assist!</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <input type="text" id="chatInput" placeholder="Ask me anything or request help...">
+                    <button id="sendMessage" title="Send message">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <line x1="22" y1="2" x2="11" y2="13"></line>
+                            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="apiKeyModal" class="modal">
+        <div class="modal-content">
+            <h2>AI Setup Required</h2>
+            <p>To use the AI assistant, you need an OpenAI API key.</p>
+            <div class="api-key-info">
+                <p><strong>Don't have one?</strong></p>
+                <ol>
+                    <li>Visit <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI API Keys</a></li>
+                    <li>Sign up or log in</li>
+                    <li>Create a new secret key</li>
+                    <li>Paste it below</li>
+                </ol>
+            </div>
+            <div class="input-group">
+                <label for="apiKeyInput">OpenAI API Key:</label>
+                <input type="password" id="apiKeyInput" placeholder="sk-...">
+            </div>
+            <div class="modal-actions">
+                <button id="saveApiKey" class="primary-btn">Save & Start</button>
+                <button id="skipApiKey" class="secondary-btn">Skip (Use Demo Mode)</button>
+            </div>
+            <p class="note">Your API key is stored locally in your browser and never sent anywhere except OpenAI.</p>
+        </div>
+    </div>
+
+    <script src="ai-service.js"></script>
+    <script src="App.js"></script>
+    <script src="mcp-client.js"></script>
+</body>
+</html>
