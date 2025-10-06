@@ -11,7 +11,7 @@ import { createServer } from 'http';
 import cors from 'cors';
 import { config } from 'dotenv';
 import OpenAI from 'openai';
-
+import crypto from 'crypto';
 config({ path: '../.env' });
 
 const app = express();
@@ -174,7 +174,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
 }
 
 wss.on('connection', (ws) => {
-  const sessionId = Math.random().toString(36).substring(7);
+  const sessionId = crypto.randomBytes(16).toString('hex');
   const session = new DrawingSession(ws, sessionId);
   sessions.set(sessionId, session);
 
