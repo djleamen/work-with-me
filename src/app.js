@@ -249,7 +249,7 @@ function colorsMatch(a, b) {
     return a[0] === b[0] && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
 }
 
-function clearCanvasProgrammatically(message = "Canvas cleared! Ready for a fresh start. What would you like to create?") {
+function clearCanvasProgrammatically(message = 'Canvas cleared! Ready for a fresh start. What would you like to create?') {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     saveState();
     pendingAIDrawOffer = null;
@@ -282,7 +282,7 @@ document.getElementById('saveImage').addEventListener('click', () => {
     link.download = `work-with-me-${Date.now()}.png`;
     link.href = getCanvasSnapshot();
     link.click();
-    addAIMessage("Image saved! Great work! 🎨");
+    addAIMessage('Image saved! Great work! 🎨');
 });
 
 const chatMessages = document.getElementById('chatMessages');
@@ -291,11 +291,11 @@ const sendButton = document.getElementById('sendMessage');
 
 function escapeHTML(str) {
     return str
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }
 
 function addMessage(content, isUser = false) {
@@ -404,7 +404,7 @@ function initializeAI() {
     if (savedApiKey) {
         aiService.initialize(savedApiKey).then(() => {
             console.log('AI Service initialized with saved API key');
-            addAIMessage("I'm powered by GPT 4.1! I can understand your drawings and provide intelligent feedback. Start creating!");
+            addAIMessage('I\'m powered by GPT 4.1! I can understand your drawings and provide intelligent feedback. Start creating!');
         }).catch(err => {
             console.error('Failed to initialize AI:', err);
             showApiKeyModal();
@@ -441,7 +441,7 @@ document.getElementById('saveApiKey').addEventListener('click', () => {
     
     aiService.initialize(apiKey).then(() => {
         hideApiKeyModal();
-        addAIMessage("🚀 AI initialized! I'm powered by GPT-4 and ready to help you create, learn, and draw together!");
+        addAIMessage('🚀 AI initialized! I\'m powered by GPT-4 and ready to help you create, learn, and draw together!');
         useDemoMode = false;
     }).catch(err => {
         alert('Failed to initialize AI. Please check your API key and try again.');
@@ -452,7 +452,7 @@ document.getElementById('saveApiKey').addEventListener('click', () => {
 document.getElementById('skipApiKey').addEventListener('click', () => {
     hideApiKeyModal();
     useDemoMode = true;
-    addAIMessage("📝 Running in demo mode with pre-programmed responses. For the full AI experience, add your OpenAI API key in settings!");
+    addAIMessage('📝 Running in demo mode with pre-programmed responses. For the full AI experience, add your OpenAI API key in settings!');
 });
 
 document.getElementById('toggleAI').addEventListener('click', () => {
@@ -461,18 +461,18 @@ document.getElementById('toggleAI').addEventListener('click', () => {
     status.textContent = aiEnabled ? 'AI: Active' : 'AI: Paused';
     
     if (aiEnabled) {
-        addAIMessage("I'm back and ready to help! Continue drawing and I'll provide feedback.");
+        addAIMessage('I\'m back and ready to help! Continue drawing and I\'ll provide feedback.');
     } else {
-        addAIMessage("I'll stay quiet for now. Click the button again when you want my help!");
+        addAIMessage('I\'ll stay quiet for now. Click the button again when you want my help!');
     }
 });
 
 document.getElementById('aiCollaborate').addEventListener('change', (e) => {
     aiCanDraw = e.target.checked;
     if (aiCanDraw) {
-        addAIMessage("Great! I can now draw alongside you to help visualize ideas.");
+        addAIMessage('Great! I can now draw alongside you to help visualize ideas.');
     } else {
-        addAIMessage("Okay, I'll just provide verbal guidance without drawing.");
+        addAIMessage('Okay, I\'ll just provide verbal guidance without drawing.');
     }
 });
 
@@ -544,7 +544,7 @@ async function performAnalysis() {
             }
         } catch (error) {
             console.error('AI Error:', error);
-            addAIMessage("Hmm, I'm having trouble connecting.");
+            addAIMessage('Hmm, I\'m having trouble connecting.');
             useDemoMode = true;
             performDemoAnalysis(coverage, colors);
         }
@@ -556,34 +556,34 @@ async function performAnalysis() {
 function performDemoAnalysis(coverage, colors) {
     if (coverage < 3) {
         const messages = [
-            "Nice start! I see you're sketching something. 🎨",
-            "Interesting! What are you planning to create?",
-            "Good technique! Your strokes look confident.",
-            "I'm watching! Keep going, this looks promising.",
+            'Nice start! I see you\'re sketching something. 🎨',
+            'Interesting! What are you planning to create?',
+            'Good technique! Your strokes look confident.',
+            'I\'m watching! Keep going, this looks promising.',
         ];
         addAIMessage(messages[Math.floor(Math.random() * messages.length)]);
     } else if (coverage < 8) {
         const messages = [
-            colors > 2 ? "Great use of colors! The variety really adds depth." : "Looking good! Have you considered adding more colors?",
-            "Your composition is taking shape nicely!",
-            "I can see your vision coming together! 🖌️",
-            "Nice work! The proportions look balanced.",
+            colors > 2 ? 'Great use of colors! The variety really adds depth.' : 'Looking good! Have you considered adding more colors?',
+            'Your composition is taking shape nicely!',
+            'I can see your vision coming together! 🖌️',
+            'Nice work! The proportions look balanced.',
         ];
         addAIMessage(messages[Math.floor(Math.random() * messages.length)]);
     } else if (coverage < 20) {
         const messages = [
-            "This is really coming along! Want me to help with anything specific?",
-            colors > 3 ? "Beautiful color palette! You have a good eye for color harmony." : "Your drawing has great structure. Maybe try experimenting with more colors?",
-            "Impressive! Are you working on homework or just creating art?",
-            "I'm loving this! The details are really emerging.",
+            'This is really coming along! Want me to help with anything specific?',
+            colors > 3 ? 'Beautiful color palette! You have a good eye for color harmony.' : 'Your drawing has great structure. Maybe try experimenting with more colors?',
+            'Impressive! Are you working on homework or just creating art?',
+            'I\'m loving this! The details are really emerging.',
         ];
         addAIMessage(messages[Math.floor(Math.random() * messages.length)]);
     } else if (coverage < 40 && feedbackCount < 8) {
         const messages = [
-            "Wow! This is getting detailed. You're doing great! 🌟",
-            "Your artwork is really filling out beautifully!",
-            "I can see you're putting a lot of thought into this. Keep it up!",
-            "This is looking fantastic! Need any suggestions or help?",
+            'Wow! This is getting detailed. You\'re doing great! 🌟',
+            'Your artwork is really filling out beautifully!',
+            'I can see you\'re putting a lot of thought into this. Keep it up!',
+            'This is looking fantastic! Need any suggestions or help?',
         ];
         addAIMessage(messages[Math.floor(Math.random() * messages.length)]);
     }
@@ -603,7 +603,7 @@ async function handleSendMessage() {
 
     const eraseIntent = !analysisOnly ? detectEraseIntent(lowerMsg) : null;
     if (eraseIntent?.entireCanvas) {
-        clearCanvasProgrammatically("I've cleared the canvas so you can start fresh. What would you like to create next?");
+        clearCanvasProgrammatically('I\'ve cleared the canvas so you can start fresh. What would you like to create next?');
         return;
     }
 
@@ -624,7 +624,7 @@ async function handleSendMessage() {
     const isExplicitDrawRequest = !analysisOnly && aiCanDraw && shouldTriggerDrawFromMessage(lowerMsg);
     
     if (needsVision) {
-        addAIMessage("👁️ Let me take a look at your canvas...");
+        addAIMessage('👁️ Let me take a look at your canvas...');
     }
     
     if (aiAvailable) {
@@ -681,12 +681,12 @@ function shouldUseVision(message) {
 function isAnalysisOnlyQuery(lowerMessage) {
     const analysisPhrases = [
         'what have i drawn',
-        "what've i drawn",
+        'what\'ve i drawn',
         'what did i draw',
         'what am i drawing',
-        "what's on my canvas",
+        'what\'s on my canvas',
         'what is on my canvas',
-        "what's on the canvas",
+        'what\'s on the canvas',
         'what is on the canvas',
         'what is on this canvas',
         'what is on my drawing',
@@ -784,7 +784,7 @@ function isAffirmativeResponse(lowerMessage) {
         'ok',
         'okay',
         'sounds good',
-        "that'd be great",
+        'that\'d be great',
         'that would be great',
         'please add it',
         'please add that'
@@ -803,9 +803,9 @@ function isNegativeResponse(lowerMessage) {
         'not yet',
         'maybe later',
         'not right now',
-        "don't", 
+        'don\'t', 
         'do not',
-        "don't add",
+        'don\'t add',
         'no thank you',
         'please don\'t'
     ];
@@ -938,7 +938,7 @@ async function processMessageWithAI({ message, canvasData, canvasImage, analysis
         }
     } catch (error) {
         console.error('AI Error:', error);
-        addAIMessage("⚠️ I'm having trouble connecting to my AI brain. Please check your API key or switch to demo mode.");
+        addAIMessage('⚠️ I\'m having trouble connecting to my AI brain. Please check your API key or switch to demo mode.');
 
         if (!analysisOnly && (isExplicitDrawRequest || autoDrawPrompt)) {
             const promptToUse = autoDrawPrompt || message;
@@ -979,31 +979,31 @@ function analyzeCurrentDrawing() {
     const colors = colorVariety.size;
     
     if (coverage < 0.5) {
-        addAIMessage("I don't see much on the canvas yet! Start drawing and I'll help you analyze it. 🎨");
+        addAIMessage('I don\'t see much on the canvas yet! Start drawing and I\'ll help you analyze it. 🎨');
     } else {
-        let analysis = "Let me analyze your drawing! 🔍\n\n";
+        let analysis = 'Let me analyze your drawing! 🔍\n\n';
         
         if (coverage < 5) {
-            analysis += "• You have a light sketch started\n";
+            analysis += '• You have a light sketch started\n';
         } else if (coverage < 15) {
-            analysis += "• Your drawing is taking shape nicely\n";
+            analysis += '• Your drawing is taking shape nicely\n';
         } else if (coverage < 30) {
-            analysis += "• You have a substantial piece developing\n";
+            analysis += '• You have a substantial piece developing\n';
         } else {
-            analysis += "• This is a detailed, well-filled composition\n";
+            analysis += '• This is a detailed, well-filled composition\n';
         }
         
         if (colors === 1) {
-            analysis += "• Using a single color - great for focused studies\n";
+            analysis += '• Using a single color - great for focused studies\n';
         } else if (colors === 2) {
-            analysis += "• Using 2 colors - nice minimal palette\n";
+            analysis += '• Using 2 colors - nice minimal palette\n';
         } else if (colors <= 4) {
-            analysis += "• Using " + colors + " colors - good variety without overwhelming\n";
+            analysis += '• Using ' + colors + ' colors - good variety without overwhelming\n';
         } else {
-            analysis += "• Using " + colors + " colors - vibrant and diverse!\n";
+            analysis += '• Using ' + colors + ' colors - vibrant and diverse!\n';
         }
         
-        analysis += "\nKeep going, or ask me for specific help! 🌟";
+        analysis += '\nKeep going, or ask me for specific help! 🌟';
         addAIMessage(analysis);
     }
 }
@@ -1047,7 +1047,7 @@ function handleHelpRequest(message) {
 
 function handleDrawRequest(message) {
     const lowerMsg = message.toLowerCase();
-    addAIMessage("I'd love to draw with you! Let me add something to the canvas...");
+    addAIMessage('I\'d love to draw with you! Let me add something to the canvas...');
     
     setTimeout(() => {
         drawAIShapeFromMessage(lowerMsg);
@@ -1060,25 +1060,25 @@ function drawAIShapeFromMessage(lowerMsg) {
     
     if (lowerMsg.includes('star')) {
         drawStar(centerX, centerY, 5, 50, 25, '#FFD700');
-        addAIMessage("I drew a star! ⭐ Now it's your turn. Try adding to it or create something new!");
+        addAIMessage('I drew a star! ⭐ Now it\'s your turn. Try adding to it or create something new!');
     } else if (lowerMsg.includes('circle') || lowerMsg.includes('round')) {
         drawCircleShape(centerX, centerY, 60, currentColor);
-        addAIMessage("Here's a circle! Try adding details to it or draw around it! 🔵");
+        addAIMessage('Here\'s a circle! Try adding details to it or draw around it! 🔵');
     } else if (lowerMsg.includes('square') || lowerMsg.includes('box')) {
         drawSquare(centerX - 50, centerY - 50, 100, currentColor);
-        addAIMessage("I drew a square! Maybe turn it into a house or robot? 🏠");
+        addAIMessage('I drew a square! Maybe turn it into a house or robot? 🏠');
     } else if (lowerMsg.includes('heart')) {
         drawHeart(centerX, centerY, 60, '#FF6B9D');
-        addAIMessage("Here's a heart for you! ❤️ Feel free to decorate it!");
+        addAIMessage('Here\'s a heart for you! ❤️ Feel free to decorate it!');
     } else if (lowerMsg.includes('triangle')) {
         drawTriangle(centerX, centerY - 40, 80, currentColor);
-        addAIMessage("Triangle drawn! 🔺 Great for geometry or creative designs!");
+        addAIMessage('Triangle drawn! 🔺 Great for geometry or creative designs!');
     } else if (lowerMsg.includes('flower')) {
         drawFlower(centerX, centerY, 40, '#FF69B4', '#FFD700');
-        addAIMessage("A flower for you! 🌸 Try adding a stem and leaves!");
+        addAIMessage('A flower for you! 🌸 Try adding a stem and leaves!');
     } else if (lowerMsg.includes('smiley') || lowerMsg.includes('face')) {
         drawSmiley(centerX, centerY, 50, '#FFD700');
-        addAIMessage("Here's a smiley face! 😊 Spread some joy!");
+        addAIMessage('Here\'s a smiley face! 😊 Spread some joy!');
     } else {
         const shapes = ['star', 'circle', 'heart', 'flower', 'smiley'];
         const randomShape = shapes[Math.floor(Math.random() * shapes.length)];
@@ -1134,13 +1134,13 @@ function handleColorAdvice() {
 
 function handleImprovementAdvice() {
     const tips = [
-        `**Composition tip:** Try using the rule of thirds - divide your canvas into 9 sections and place focal points at intersections.`,
+        '**Composition tip:** Try using the rule of thirds - divide your canvas into 9 sections and place focal points at intersections.',
         
-        `**Technique tip:** Vary your brush sizes to create depth. Use larger brushes for background and smaller ones for details.`,
+        '**Technique tip:** Vary your brush sizes to create depth. Use larger brushes for background and smaller ones for details.',
         
-        `**Color tip:** Start with a light sketch, then gradually build up darker colors for better control.`,
+        '**Color tip:** Start with a light sketch, then gradually build up darker colors for better control.',
         
-        `**Practice tip:** Try drawing basic shapes first (circles, squares, triangles) to warm up your hand.`,
+        '**Practice tip:** Try drawing basic shapes first (circles, squares, triangles) to warm up your hand.',
     ];
     
     addAIMessage(tips[Math.floor(Math.random() * tips.length)]);
@@ -1148,10 +1148,10 @@ function handleImprovementAdvice() {
 
 function handleGeneralQuery(message) {
     const responses = [
-        "That's interesting! Tell me more about what you'd like to create.",
-        "I'm here to help! Would you like some drawing tips or shall we work on something specific?",
-        "Great question! Feel free to start drawing and I'll provide feedback as you go.",
-        "I'm analyzing your canvas. What would you like to focus on?",
+        'That\'s interesting! Tell me more about what you\'d like to create.',
+        'I\'m here to help! Would you like some drawing tips or shall we work on something specific?',
+        'Great question! Feel free to start drawing and I\'ll provide feedback as you go.',
+        'I\'m analyzing your canvas. What would you like to focus on?',
     ];
     
     addAIMessage(responses[Math.floor(Math.random() * responses.length)]);
@@ -1340,7 +1340,7 @@ function demonstrateMathExample() {
         ctx.restore();
         saveState();
         
-        addAIMessage("See how I solved it step by step? Draw your own equation and I'll help you solve it!");
+        addAIMessage('See how I solved it step by step? Draw your own equation and I\'ll help you solve it!');
     }, 500);
 }
 
@@ -1375,12 +1375,12 @@ setInterval(() => {
     
     if (drawnPixels > 1000 && Math.random() < 0.15) {
         const messages = [
-            "💡 Tip: Try varying your brush sizes for more dynamic artwork!",
-            "🎨 Looking creative! Want me to suggest some color combinations?",
-            "✨ Your art is developing nicely! Need help with anything?",
-            "🖌️ Pro tip: Lighter colors first, then add darker details!",
-            "🌟 You're doing great! Want me to draw something to inspire you?",
-            "🎯 Need help with proportions or perspective? Just ask!",
+            '💡 Tip: Try varying your brush sizes for more dynamic artwork!',
+            '🎨 Looking creative! Want me to suggest some color combinations?',
+            '✨ Your art is developing nicely! Need help with anything?',
+            '🖌️ Pro tip: Lighter colors first, then add darker details!',
+            '🌟 You\'re doing great! Want me to draw something to inspire you?',
+            '🎯 Need help with proportions or perspective? Just ask!',
         ];
         
         if (Math.random() < 0.4) {
@@ -1652,7 +1652,7 @@ async function executeAIDrawing(drawingData, originalPrompt = '') {
     }
 
     saveState();
-    addAIMessage("Done! What do you think? Want to add to it?");
+    addAIMessage('Done! What do you think? Want to add to it?');
 }
 
 function drawAIPath(cmd, isRelative) {
@@ -1897,7 +1897,7 @@ async function handleCollaborativeDrawRequest(message) {
         return;
     }
 
-    addAIMessage("🎨 Let me draw that for you...");
+    addAIMessage('🎨 Let me draw that for you...');
     
     try {
         const canvasImage = getCanvasSnapshot('image/png');
@@ -1908,7 +1908,7 @@ async function handleCollaborativeDrawRequest(message) {
         
     } catch (error) {
         console.error('Collaborative drawing error:', error);
-        addAIMessage("⚠️ I had trouble creating that drawing. Let me try a simpler approach...");
+        addAIMessage('⚠️ I had trouble creating that drawing. Let me try a simpler approach...');
         handleDrawRequest(message);
     }
 }
