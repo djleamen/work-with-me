@@ -19,7 +19,7 @@
   "author": "djleamen",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.18.2",
+    "express": "^4.22.1",
     "ws": "^8.14.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
