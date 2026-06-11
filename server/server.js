@@ -235,7 +235,7 @@ wss.on('connection', (ws) => {
       
       switch (message.type) {
         case 'canvas_update': {
-          if (typeof message.imageData !== 'string' || !message.imageData) {
+          if (typeof message.imageData !== 'string' || !message.imageData.trim()) {
             ws.send(JSON.stringify({
               type: 'error',
               message: 'canvas_update requires imageData'
@@ -251,7 +251,7 @@ wss.on('connection', (ws) => {
         }
 
         case 'analyze_canvas': {
-          if (typeof message.imageData !== 'string' || !message.imageData) {
+          if (typeof message.imageData !== 'string' || !message.imageData.trim()) {
             ws.send(JSON.stringify({
               type: 'error',
               message: 'analyze_canvas requires imageData'
