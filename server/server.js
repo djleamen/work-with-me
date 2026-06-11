@@ -49,9 +49,17 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '10mb' }));
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
+// Don't crash at startup when the key is missing; AI features fail gracefully instead
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+
+function requireOpenAI() {
+  if (!openai) {
+    throw new Error('OpenAI API key not configured. Set OPENAI_API_KEY to enable AI features.');
+  }
+  return openai;
+}
 
 const sessions = new Map();
 
@@ -109,7 +117,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
         ]
       });
 
-      const response = await openai.chat.completions.create({
+      const response = await requireOpenAI().chat.completions.create({
         model: 'gpt-4o',
         messages: messages,
         max_tokens: 800,
@@ -173,7 +181,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
         });
       }
 
-      const response = await openai.chat.completions.create({
+      const response = await requireOpenAI().chat.completions.create({
         model: includeCanvas ? 'gpt-4o' : 'gpt-4-turbo-preview',
         messages: messages,
         max_tokens: includeCanvas ? 800 : 500,
@@ -191,6 +199,13 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
         role: 'assistant',
         content: aiResponse
       });
+
+      if (this.conversationHistory.length > 21) {
+        this.conversationHistory = [
+          this.conversationHistory[0],
+          ...this.conversationHistory.slice(-20)
+        ];
+      }
 
       return aiResponse;
 
@@ -220,6 +235,13 @@ wss.on('connection', (ws) => {
       
       switch (message.type) {
         case 'canvas_update': {
+          if (typeof message.imageData !== 'string' || !message.imageData) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'canvas_update requires imageData'
+            }));
+            break;
+          }
           session.addCanvasSnapshot(message.imageData);
           ws.send(JSON.stringify({
             type: 'ack',
@@ -229,6 +251,13 @@ wss.on('connection', (ws) => {
         }
 
         case 'analyze_canvas': {
+          if (typeof message.imageData !== 'string' || !message.imageData) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'analyze_canvas requires imageData'
+            }));
+            break;
+          }
           const analysis = await session.analyzeCanvas(
             message.imageData,
             message.userMessage
@@ -243,6 +272,13 @@ wss.on('connection', (ws) => {
         }
 
         case 'chat_message': {
+          if (typeof message.content !== 'string' || !message.content.trim()) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'chat_message requires non-empty content'
+            }));
+            break;
+          }
           const needsCanvas = message.includeCanvas || shouldUseVision(message.content);
           const response = await session.sendMessage(
             message.content,
