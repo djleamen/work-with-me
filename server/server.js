@@ -18,7 +18,27 @@ const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
 
-app.use(cors());
+// Allow local dev origins by default; extend with ALLOWED_ORIGINS (comma-separated)
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+function isOriginAllowed(origin) {
+  // Non-browser clients (no Origin header) are allowed; CORS can't restrict them anyway
+  return !origin || LOCAL_ORIGIN.test(origin) || allowedOrigins.includes(origin);
+}
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (isOriginAllowed(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Origin not allowed by CORS'));
+    }
+  }
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const openai = new OpenAI({
@@ -173,7 +193,14 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
   }
 }
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
+  const origin = req.headers.origin;
+  if (!isOriginAllowed(origin)) {
+    console.warn(`Rejected WebSocket connection from disallowed origin: ${origin}`);
+    ws.close(1008, 'Origin not allowed');
+    return;
+  }
+
   const sessionId = crypto.randomBytes(16).toString('hex');
   const session = new DrawingSession(ws, sessionId);
   sessions.set(sessionId, session);
