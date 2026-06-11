@@ -16,9 +16,37 @@ config({ path: '../.env' });
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
 
-app.use(cors());
+// Allow local dev origins by default; extend with ALLOWED_ORIGINS (comma-separated)
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+function isOriginAllowed(origin) {
+  // Non-browser clients (no Origin header) are allowed; CORS can't restrict them anyway
+  return !origin || LOCAL_ORIGIN.test(origin) || allowedOrigins.includes(origin);
+}
+
+// Reject disallowed origins during the HTTP Upgrade handshake,
+// before a WebSocket (and session) is ever created
+const wss = new WebSocketServer({
+  server,
+  verifyClient: ({ origin }, done) => {
+    if (isOriginAllowed(origin)) {
+      done(true);
+    } else {
+      console.warn(`Rejected WebSocket upgrade from disallowed origin: ${origin}`);
+      done(false, 403, 'Origin not allowed');
+    }
+  }
+});
+
+// Disallowed origins get no CORS headers (browser blocks the read) without erroring the request
+app.use(cors({
+  origin: (origin, callback) => callback(null, isOriginAllowed(origin))
+}));
 app.use(express.json({ limit: '10mb' }));
 
 const openai = new OpenAI({
