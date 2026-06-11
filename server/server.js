@@ -16,7 +16,6 @@ config({ path: '../.env' });
 
 const app = express();
 const server = createServer(app);
-const wss = new WebSocketServer({ server });
 
 // Allow local dev origins by default; extend with ALLOWED_ORIGINS (comma-separated)
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -30,14 +29,23 @@ function isOriginAllowed(origin) {
   return !origin || LOCAL_ORIGIN.test(origin) || allowedOrigins.includes(origin);
 }
 
-app.use(cors({
-  origin: (origin, callback) => {
+// Reject disallowed origins during the HTTP Upgrade handshake,
+// before a WebSocket (and session) is ever created
+const wss = new WebSocketServer({
+  server,
+  verifyClient: ({ origin }, done) => {
     if (isOriginAllowed(origin)) {
-      callback(null, true);
+      done(true);
     } else {
-      callback(new Error('Origin not allowed by CORS'));
+      console.warn(`Rejected WebSocket upgrade from disallowed origin: ${origin}`);
+      done(false, 403, 'Origin not allowed');
     }
   }
+});
+
+// Disallowed origins get no CORS headers (browser blocks the read) without erroring the request
+app.use(cors({
+  origin: (origin, callback) => callback(null, isOriginAllowed(origin))
 }));
 app.use(express.json({ limit: '10mb' }));
 
@@ -193,14 +201,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
   }
 }
 
-wss.on('connection', (ws, req) => {
-  const origin = req.headers.origin;
-  if (!isOriginAllowed(origin)) {
-    console.warn(`Rejected WebSocket connection from disallowed origin: ${origin}`);
-    ws.close(1008, 'Origin not allowed');
-    return;
-  }
-
+wss.on('connection', (ws) => {
   const sessionId = crypto.randomBytes(16).toString('hex');
   const session = new DrawingSession(ws, sessionId);
   sessions.set(sessionId, session);
