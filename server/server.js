@@ -182,7 +182,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
       }
 
       const response = await requireOpenAI().chat.completions.create({
-        model: includeCanvas ? 'gpt-4o' : 'gpt-4o-mini',
+        model: includeCanvas ? 'gpt-4o' : (process.env.OPENAI_MODEL || 'gpt-4o-mini'),
         messages: messages,
         max_tokens: includeCanvas ? 800 : 500,
         temperature: 0.7
