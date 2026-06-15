@@ -6,7 +6,7 @@
 class AIService {
     constructor() {
         this.apiKey = null;
-        this.model = 'gpt-4-turbo-preview';
+        this.model = 'gpt-4o-mini';
         this.visionModel = 'gpt-4.1';
         this.conversationHistory = [];
         this.useVision = false;

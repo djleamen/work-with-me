@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Work With Me - MCP Server
- * Real-time AI drawing collaboration server using Model Context Protocol
+ * Work With Me - WebSocket Server
+ * Real-time AI drawing collaboration server
  */
 
 import express from 'express';
@@ -182,7 +182,7 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
       }
 
       const response = await requireOpenAI().chat.completions.create({
-        model: includeCanvas ? 'gpt-4o' : 'gpt-4-turbo-preview',
+        model: includeCanvas ? 'gpt-4o' : 'gpt-4o-mini',
         messages: messages,
         max_tokens: includeCanvas ? 800 : 500,
         temperature: 0.7
@@ -226,7 +226,7 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'connected',
     sessionId: sessionId,
-    message: '🎨 Connected to Work With Me MCP Server!'
+    message: '🎨 Connected to Work With Me!'
   }));
 
   ws.on('message', async (data) => {
@@ -391,7 +391,7 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`
 ╔═══════════════════════════════════════════════════════╗
-║   Work With Me - MCP Server                           ║
+║   Work With Me - WebSocket Server                     ║
 ║   Real-time AI Drawing Collaboration                  ║
 ╚═══════════════════════════════════════════════════════╝
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Work With Me - Quick Start Script
-# Starts both the web app and MCP server
+# Starts both the web app and WebSocket server
 
 echo "🎨 Work With Me - Starting Services"
 echo "===================================="
@@ -39,20 +39,20 @@ if [ -d "server" ]; then
     # Check if node_modules exists
     if [ ! -d "node_modules" ]; then
         echo ""
-        echo "📦 Installing MCP server dependencies..."
+        echo "📦 Installing WebSocket server dependencies..."
         npm install
     fi
     
-    # Start MCP server
+    # Start WebSocket server
     echo ""
-    echo "🚀 Starting MCP server on ws://localhost:3001..."
+    echo "🚀 Starting WebSocket server on ws://localhost:3001..."
     npm start &
     SERVER_PID=$!
     
     cd ..
 else
     echo ""
-    echo "⚠️  MCP server not found. Run setup first:"
+    echo "⚠️  WebSocket server not found. Run setup first:"
     echo "   cd server && npm install"
 fi
 

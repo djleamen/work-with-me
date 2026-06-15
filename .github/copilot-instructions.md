@@ -13,13 +13,13 @@ The project consists of two main components:
    - Canvas-based drawing interface
    - Real-time chat with AI
    - WebSocket client for server communication
-   - Files: `app.js`, `ai-service.js`, `mcp-client.js`, `index.html`, `styles.css`
+   - Files: `app.js`, `ai-service.js`, `ws-client.js`, `index.html`, `styles.css`
 
-2. **MCP Server** (`server/`)
+2. **WebSocket Server** (`server/`)
    - Node.js/Express backend
    - WebSocket server for real-time communication
    - OpenAI API integration for AI features
-   - Model Context Protocol (MCP) implementation
+   - Custom JSON message protocol (`canvas_update`, `analyze_canvas`, `chat_message`, …)
    - Files: `server.js`, `test-client.js`
 
 ### Technology Stack
@@ -47,12 +47,12 @@ cp .env.example .env
 
 ### Running the Application
 ```bash
-# Start both web server and MCP server
+# Start both web server and WebSocket server
 ./start.sh
 
 # Or start individually:
 ./start-web.sh     # Web frontend on port 8000
-./start-server.sh  # MCP server on port 3001
+./start-server.sh  # WebSocket server on port 3001
 ```
 
 ### Linting
@@ -141,15 +141,15 @@ The frontend uses vanilla JS (no frameworks) to:
 
 ### AI Service Architecture
 - OpenAI API key can be provided by user (client-side) or server-side
-- Two modes: direct OpenAI API calls or MCP server proxy
+- Two modes: direct OpenAI API calls or WebSocket server proxy
 - Vision model used for canvas analysis
 - Conversation history maintained for context
 
-### Model Context Protocol (MCP)
-- Custom MCP implementation for drawing collaboration
+### WebSocket Server Design
+- Plain `ws` WebSocket server with a custom JSON message protocol
 - Session-based conversation management
 - Canvas history tracking for analysis
-- Real-time streaming responses
+- Real-time bidirectional communication
 
 ## Security Considerations
 
@@ -202,14 +202,14 @@ The frontend uses vanilla JS (no frameworks) to:
 
 ### Adding a new WebSocket message type:
 1. Define message structure (include `type` field)
-2. Add handler in `mcp-client.js` `handleMessage()`
+2. Add handler in `ws-client.js` `handleMessage()`
 3. Add corresponding handler in `server.js`
 4. Update error handling for the new type
 5. Test bidirectional communication
 
 ## Environment Variables
 - `OPENAI_API_KEY`: Required for AI features (in `.env`)
-- `OPENAI_MODEL`: Optional, defaults to `gpt-4-turbo-preview`
+- `OPENAI_MODEL`: Optional, defaults to `gpt-4o-mini`
 - `AI_TEMPERATURE`: Optional, defaults to 0.7
 
 ## Dependencies Management
