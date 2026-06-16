@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Work With Me - Start MCP Server
+# Work With Me - Start WebSocket Server
 # Starts the real-time collaboration server
 
-echo "🚀 Work With Me - Starting MCP Server"
-echo "====================================="
+echo "🚀 Work With Me - Starting WebSocket Server"
+echo "============================================="
 echo ""
 
 # Check if we're in the right directory
@@ -32,7 +32,7 @@ if [ ! -f "../.env" ]; then
     echo ""
 fi
 
-echo "🚀 Starting MCP Server..."
+echo "🚀 Starting WebSocket Server..."
 echo ""
 
 npm start

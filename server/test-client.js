@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Test client for Work With Me MCP Server
+ * Test client for Work With Me WebSocket Server
  * Tests WebSocket connection and basic functionality
  * Debugging and development purposes only
  */

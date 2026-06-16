@@ -1,8 +1,8 @@
-/** WebSocket Client for Work With Me MCP Server
+/** WebSocket Client for Work With Me
  * Handles real-time communication with the AI collaboration server
  */
 
-class MCPClient {
+class WSClient {
     constructor() {
         this.ws = null;
         this.sessionId = null;
@@ -24,7 +24,7 @@ class MCPClient {
                 this.ws = new WebSocket(this.serverUrl);
 
                 this.ws.onopen = () => {
-                    console.log('✅ Connected to MCP Server');
+                    console.log('✅ Connected to WebSocket Server');
                     this.connected = true;
                     this.reconnectAttempts = 0;
                 };
@@ -49,7 +49,7 @@ class MCPClient {
                 };
 
                 this.ws.onclose = () => {
-                    console.log('Disconnected from MCP Server');
+                    console.log('Disconnected from WebSocket Server');
                     this.connected = false;
                     this.attemptReconnect();
                 };
@@ -166,4 +166,4 @@ class MCPClient {
     }
 }
 
-window.MCPClient = MCPClient;
+window.WSClient = WSClient;
