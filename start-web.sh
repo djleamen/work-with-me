@@ -35,7 +35,20 @@ echo ""
 cd src
 
 # Start server
-python3 -m http.server $PORT &
+python3 -c "
+import http.server, socketserver, sys
+PORT = int(sys.argv[1])
+class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        # Dev server: never cache so a normal reload always gets fresh code
+        self.send_header('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        super().end_headers()
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(('', PORT), NoCacheHandler) as httpd:
+    httpd.serve_forever()
+" $PORT &
 SERVER_PID=$!
 
 # Wait a moment for server to start

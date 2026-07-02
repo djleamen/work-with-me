@@ -61,6 +61,142 @@ function requireOpenAI() {
   return openai;
 }
 
+// Models are configurable so you can point them at the strongest model your
+// account has access to without touching code. Vision-capable tasks (canvas
+// analysis + collaborative drawing) use VISION_MODEL.
+const TEXT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
+const VISION_MODEL = process.env.OPENAI_VISION_MODEL || 'gpt-5.5';
+
+function isNextGenModel(model) {
+  return /^(gpt-5|o\d)/i.test(model || '');
+}
+
+// Newer reasoning models (GPT-5 / o-series) use max_completion_tokens, only
+// support the default temperature, and accept reasoning_effort. Older models
+// (gpt-4.x) use max_tokens + temperature. This keeps both working.
+function buildCompletionRequest(model, messages, { maxTokens, temperature, stream } = {}) {
+  const request = { model, messages };
+  if (stream) request.stream = true;
+  if (isNextGenModel(model)) {
+    if (maxTokens) request.max_completion_tokens = maxTokens;
+    request.reasoning_effort = process.env.OPENAI_REASONING_EFFORT || 'low';
+  } else {
+    if (maxTokens) request.max_tokens = maxTokens;
+    if (typeof temperature === 'number') request.temperature = temperature;
+  }
+  return request;
+}
+
+// Shared system prompt for generating structured, canvas-aware drawing commands
+const DRAWING_SYSTEM_PROMPT = `You are an AI drawing assistant that can create structured drawing commands.
+When asked to draw something, respond with a JSON object containing drawing instructions.
+
+Format:
+{
+    "description": "Brief description of what you're drawing",
+    "commands": [
+        {"action": "path", "points": [[x1,y1], [x2,y2]], "color": "#hex", "width": 3, "fill": false},
+        {"action": "circle", "x": 120, "y": 180, "radius": 40, "color": "#hex", "fill": true, "snapToExisting": true},
+        {"action": "rect", "x": 60, "y": 80, "width": 120, "height": 90, "color": "#hex", "fill": false, "snapToExisting": false},
+        {"action": "text", "x": 220, "y": 140, "text": "Hello", "color": "#hex", "size": 20}
+    ]
+}
+
+Coordinate system: treat (0,0) as the TOP-LEFT corner of the canvas. The canvas can be up to 1024x1024, but aim to keep drawings within 90% of its width/height.
+Optional fields:
+- "coordinateSystem": "absolute" (default) or "relative" to shift from the center
+- "snapToExisting": true (default for filled shapes) when you want the client to align the element to nearby artwork, or false if you need exact absolute placement
+- "maxShift" / "minSamples" provide hints for how much alignment freedom is acceptable
+Never erase or cover the existing artwork. Avoid large background fills or full-canvas rectangles. Add small, complementary elements that enhance what's already there.
+CRITICAL PLACEMENT RULES:
+- NEVER place text or shapes on top of existing handwriting or marks. Follow the "Placement guidance" in the user's message and write only in the empty area it points to.
+- When asked to DRAW a subject (a boat, sun, flower, house, etc.), render it with "path"/"line"/"circle"/"rect" shapes and colors. Do NOT just write the subject's name or description as text — actually draw it.
+- When writing answers or labels, use "action":"text" with "snapToExisting": false, "align":"left", and absolute coordinates, laid out as a tidy vertical list (increase y by about 36px per line).
+- Keep every element fully inside the canvas and at least 20px from each edge.
+Use colors that complement the existing drawing.
+Be creative but keep drawings simple and clear.`;
+
+/**
+ * Incrementally extracts the `description` string and each object inside the
+ * `commands: [ ... ]` array from a JSON response as it streams in, so the
+ * client can render strokes the moment the model emits them.
+ */
+class StreamingDrawingParser {
+  constructor() {
+    this.buffer = '';
+    this.descriptionEmitted = false;
+    this.commandsStarted = false;
+    this.cursor = 0;
+    this.arrayDone = false;
+  }
+
+  push(chunk, onDescription, onCommand) {
+    this.buffer += chunk;
+
+    if (!this.descriptionEmitted) {
+      const match = this.buffer.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+      if (match) {
+        this.descriptionEmitted = true;
+        let value = match[1];
+        try { value = JSON.parse(`"${match[1]}"`); } catch { /* keep raw */ }
+        onDescription(value);
+      }
+    }
+
+    if (!this.commandsStarted) {
+      const keyIndex = this.buffer.indexOf('"commands"');
+      if (keyIndex === -1) return;
+      const bracket = this.buffer.indexOf('[', keyIndex);
+      if (bracket === -1) return;
+      this.commandsStarted = true;
+      this.cursor = bracket + 1;
+    }
+
+    if (this.arrayDone) return;
+    this._scanCommands(onCommand);
+  }
+
+  _scanCommands(onCommand) {
+    const buf = this.buffer;
+    let i = this.cursor;
+    while (i < buf.length) {
+      const ch = buf[i];
+      if (ch === ' ' || ch === '\n' || ch === '\r' || ch === '\t' || ch === ',') { i++; continue; }
+      if (ch === ']') { this.arrayDone = true; this.cursor = i + 1; return; }
+      if (ch === '{') {
+        const end = this._matchObject(buf, i);
+        if (end === -1) { this.cursor = i; return; } // incomplete; wait for more
+        const objStr = buf.slice(i, end + 1);
+        try { onCommand(JSON.parse(objStr)); } catch { /* skip malformed */ }
+        i = end + 1;
+        this.cursor = i;
+        continue;
+      }
+      i++;
+    }
+    this.cursor = i;
+  }
+
+  _matchObject(buf, start) {
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+    for (let i = start; i < buf.length; i++) {
+      const c = buf[i];
+      if (inString) {
+        if (escape) escape = false;
+        else if (c === '\\') escape = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === '{') depth++;
+      else if (c === '}') { depth--; if (depth === 0) return i; }
+    }
+    return -1;
+  }
+}
+
 const sessions = new Map();
 
 class DrawingSession {
@@ -117,12 +253,9 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
         ]
       });
 
-      const response = await requireOpenAI().chat.completions.create({
-        model: 'gpt-4o',
-        messages: messages,
-        max_tokens: 800,
-        temperature: 0.7
-      });
+      const response = await requireOpenAI().chat.completions.create(
+        buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 800, temperature: 0.7 })
+      );
 
       const aiResponse = response.choices[0].message.content;
 
@@ -181,12 +314,10 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
         });
       }
 
-      const response = await requireOpenAI().chat.completions.create({
-        model: includeCanvas ? 'gpt-4o' : (process.env.OPENAI_MODEL || 'gpt-4o-mini'),
-        messages: messages,
-        max_tokens: includeCanvas ? 800 : 500,
-        temperature: 0.7
-      });
+      const model = includeCanvas ? VISION_MODEL : TEXT_MODEL;
+      const response = await requireOpenAI().chat.completions.create(
+        buildCompletionRequest(model, messages, { maxTokens: includeCanvas ? 800 : 500, temperature: 0.7 })
+      );
 
       const aiResponse = response.choices[0].message.content;
 
@@ -213,6 +344,122 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
       console.error('Message error:', error);
       throw error;
     }
+  }
+
+  async generateDrawing(prompt, canvasImage = null) {
+    try {
+      const userContent = [
+        {
+          type: 'text',
+          text: `Please draw: ${prompt}\n\nProvide drawing commands as JSON.`
+        }
+      ];
+
+      if (canvasImage) {
+        userContent.push({
+          type: 'image_url',
+          image_url: { url: canvasImage, detail: 'low' }
+        });
+      }
+
+      const messages = [
+        { role: 'system', content: DRAWING_SYSTEM_PROMPT },
+        { role: 'user', content: userContent }
+      ];
+
+      const response = await requireOpenAI().chat.completions.create(
+        buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 1000, temperature: 0.8 })
+      );
+
+      const content = response.choices[0].message.content;
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return {
+            description: parsed.description || '',
+            commands: Array.isArray(parsed.commands) ? parsed.commands : [],
+            coordinateSystem: parsed.coordinateSystem
+          };
+        } catch (parseError) {
+          console.warn('Could not parse drawing commands:', parseError);
+        }
+      }
+
+      return { description: content, commands: [] };
+
+    } catch (error) {
+      console.error('Drawing generation error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Streaming variant of generateDrawing. Invokes onDescription once and
+   * onCommand for each command as soon as it is fully parsed from the model's
+   * streamed output. Returns { description, count }.
+   */
+  async streamDrawing(prompt, canvasImage, { onDescription, onCommand } = {}) {
+    const userContent = [
+      {
+        type: 'text',
+        text: `Please draw: ${prompt}\n\nProvide drawing commands as JSON.`
+      }
+    ];
+
+    if (canvasImage) {
+      userContent.push({
+        type: 'image_url',
+        image_url: { url: canvasImage, detail: 'low' }
+      });
+    }
+
+    const messages = [
+      { role: 'system', content: DRAWING_SYSTEM_PROMPT },
+      { role: 'user', content: userContent }
+    ];
+
+    const stream = await requireOpenAI().chat.completions.create(
+      buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 1000, temperature: 0.8, stream: true })
+    );
+
+    const parser = new StreamingDrawingParser();
+    let description = '';
+    let count = 0;
+    let full = '';
+
+    for await (const chunk of stream) {
+      const delta = chunk.choices?.[0]?.delta?.content || '';
+      if (!delta) continue;
+      full += delta;
+      parser.push(
+        delta,
+        (desc) => { description = desc; onDescription?.(desc); },
+        (cmd) => { count++; onCommand?.(cmd); }
+      );
+    }
+
+    // If streaming yielded no commands (e.g. the model wrapped or reordered the
+    // JSON), fall back to parsing the full text once.
+    if (count === 0) {
+      const jsonMatch = full.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (!description && parsed.description) {
+            description = parsed.description;
+            onDescription?.(description);
+          }
+          for (const cmd of (parsed.commands || [])) {
+            count++;
+            onCommand?.(cmd);
+          }
+        } catch { /* leave count at 0 */ }
+      }
+    }
+
+    return { description, count };
   }
 }
 
@@ -301,6 +548,73 @@ wss.on('connection', (ws) => {
             timestamp: Date.now()
           }));
           break;
+
+        case 'request_ai_drawing': {
+          if (typeof message.prompt !== 'string' || !message.prompt.trim()) {
+            ws.send(JSON.stringify({
+              type: 'error',
+              message: 'request_ai_drawing requires a non-empty prompt'
+            }));
+            break;
+          }
+
+          let started = false;
+          const startIfNeeded = (description) => {
+            if (started) return;
+            started = true;
+            ws.send(JSON.stringify({
+              type: 'ai_drawing_start',
+              description: description || '',
+              timestamp: Date.now()
+            }));
+          };
+
+          try {
+            const result = await session.streamDrawing(message.prompt, message.canvasImage, {
+              onDescription: (description) => startIfNeeded(description),
+              onCommand: (command) => {
+                startIfNeeded('');
+                ws.send(JSON.stringify({
+                  type: 'ai_draw_command',
+                  command,
+                  timestamp: Date.now()
+                }));
+              }
+            });
+
+            if (result.count > 0) {
+              ws.send(JSON.stringify({
+                type: 'ai_drawing_end',
+                description: result.description,
+                count: result.count,
+                timestamp: Date.now()
+              }));
+            } else {
+              // Nothing usable streamed — fall back to a single full payload
+              const drawing = await session.generateDrawing(message.prompt, message.canvasImage);
+              ws.send(JSON.stringify({
+                type: 'ai_drawing',
+                description: drawing.description,
+                commands: drawing.commands,
+                coordinateSystem: drawing.coordinateSystem,
+                fromSession: sessionId,
+                timestamp: Date.now()
+              }));
+            }
+          } catch (streamError) {
+            console.error('Streaming drawing failed, falling back to full generation:', streamError);
+            const drawing = await session.generateDrawing(message.prompt, message.canvasImage);
+            ws.send(JSON.stringify({
+              type: 'ai_drawing',
+              description: drawing.description,
+              commands: drawing.commands,
+              coordinateSystem: drawing.coordinateSystem,
+              fromSession: sessionId,
+              timestamp: Date.now()
+            }));
+          }
+          break;
+        }
 
         case 'broadcast_drawing': {
           const drawingData = {
@@ -405,6 +719,8 @@ Endpoints:
    - WS   /        - WebSocket connection
 
 API Key: ${process.env.OPENAI_API_KEY ? '✓ Loaded' : '✗ Missing'}
+Text model: ${TEXT_MODEL}
+Vision model: ${VISION_MODEL}
   `);
 });
 

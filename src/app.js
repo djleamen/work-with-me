@@ -395,6 +395,77 @@ let aiCanDraw = true;
 let drawingTimeout = null;
 let aiService = null;
 let useDemoMode = false;
+let wsClient = null;
+let serverWelcomeShown = false;
+let lastDrawPrompt = '';
+let activeStreamDraw = null;
+
+function isServerAvailable() {
+    return Boolean(wsClient?.isConnected?.());
+}
+
+function updateConnectionStatus(state) {
+    const indicator = document.getElementById('connectionStatus');
+    if (!indicator) return;
+
+    const labels = {
+        connected: 'Live',
+        connecting: 'Connecting…',
+        disconnected: 'Offline'
+    };
+    const normalized = labels[state] ? state : 'disconnected';
+
+    indicator.dataset.state = normalized;
+    const text = document.getElementById('connectionStatusText');
+    if (text) {
+        text.textContent = labels[normalized];
+    }
+}
+
+function onServerConnected() {
+    updateConnectionStatus('connected');
+
+    if (!serverWelcomeShown) {
+        serverWelcomeShown = true;
+        addAIMessage('🟢 Connected to the real-time server — I\'ll give you live feedback as you draw!');
+    }
+
+    // The server holds the API key, so a missing client key no longer blocks AI.
+    const modal = document.getElementById('apiKeyModal');
+    if (modal?.classList.contains('active') && !localStorage.getItem('openai_api_key')) {
+        hideApiKeyModal();
+        useDemoMode = false;
+    }
+}
+
+function initializeRealtime() {
+    if (typeof WSClient === 'undefined') {
+        console.warn('WSClient unavailable; staying on direct AI / demo mode.');
+        updateConnectionStatus('disconnected');
+        return;
+    }
+
+    wsClient = new WSClient();
+    wsClient.onStatusChange = (state) => {
+        updateConnectionStatus(state);
+        if (state === 'disconnected' && serverWelcomeShown) {
+            // Only nudge once we had a working connection that dropped
+            console.info('Realtime server disconnected; falling back to direct AI / demo mode.');
+        }
+    };
+    wsClient.on('connected', () => onServerConnected());
+
+    // Live co-drawing: render each stroke the moment it streams in.
+    wsClient.on('ai_drawing_start', (msg) => onStreamDrawStart(msg));
+    wsClient.on('ai_draw_command', (msg) => onStreamDrawCommand(msg));
+    wsClient.on('ai_drawing_end', () => onStreamDrawEnd());
+
+    updateConnectionStatus('connecting');
+    wsClient.connect().catch(err => {
+        console.warn('Realtime server not reachable, using direct AI / demo mode.', err);
+        updateConnectionStatus('disconnected');
+    });
+}
 
 function initializeAI() {
     aiService = new AIService();
@@ -521,6 +592,17 @@ async function performAnalysis() {
         return; // too early
     }
     
+    if (isServerAvailable()) {
+        try {
+            const canvasImage = getCanvasSnapshot('image/png');
+            const response = await wsClient.requestAnalysis(canvasImage, null);
+            addAIMessage(response);
+            return;
+        } catch (error) {
+            console.error('Realtime analysis failed, falling back:', error);
+        }
+    }
+
     if (aiService?.isInitialized?.() && !useDemoMode) {
         try {
             const canvasImage = getCanvasSnapshot('image/png');
@@ -599,6 +681,7 @@ async function handleSendMessage() {
     const lowerMsg = message.toLowerCase();
     
     const canvasData = getCanvasData();
+    const hasCanvasContent = parseFloat(canvasData.coverage) > 0.5;
     const analysisOnly = isAnalysisOnlyQuery(lowerMsg);
 
     const eraseIntent = !analysisOnly ? detectEraseIntent(lowerMsg) : null;
@@ -607,8 +690,9 @@ async function handleSendMessage() {
         return;
     }
 
-    const needsVision = analysisOnly || shouldUseVision(message);
+    const needsVision = analysisOnly || shouldUseVision(message) || (hasCanvasContent && referencesDrawing(lowerMsg));
     const canvasImage = needsVision ? getCanvasSnapshot('image/png') : null;
+    const serverAvailable = isServerAvailable();
     const aiAvailable = aiService?.isInitialized?.() && !useDemoMode;
 
     let autoDrawPrompt = null;
@@ -627,6 +711,18 @@ async function handleSendMessage() {
         addAIMessage('👁️ Let me take a look at your canvas...');
     }
     
+    if (serverAvailable) {
+        await processMessageWithServer({
+            message,
+            canvasData,
+            canvasImage,
+            analysisOnly,
+            isExplicitDrawRequest,
+            autoDrawPrompt
+        });
+        return;
+    }
+
     if (aiAvailable) {
         await processMessageWithAI({
             message,
@@ -676,6 +772,23 @@ function shouldUseVision(message) {
     
     const lowerMessage = message.toLowerCase();
     return visionKeywords.some(keyword => lowerMessage.includes(keyword));
+}
+
+/**
+ * When the canvas already has content, a much wider range of questions
+ * implicitly refer to the drawing ("answer this", "is this right?", "solve it").
+ * This lets the AI actually look at the canvas on the FIRST ask instead of
+ * needing several rephrasings to hit a hard-coded vision keyword.
+ */
+function referencesDrawing(lowerMessage) {
+    const patterns = [
+        /\bthis\b/, /\bthat\b/, /\bthese\b/, /\bthose\b/, /\bit\b/, /\bhere\b/,
+        /\banswer\b/, /\bsolve\b/, /\bsolution\b/, /\bcalculate\b/, /\bevaluate\b/,
+        /\bcorrect\b/, /\bright\b/, /\bwrong\b/, /\bcheck\b/, /\bfix\b/, /\bgrade\b/,
+        /\bequation\b/, /\bproblem\b/, /\bdrawing\b/, /\bsketch\b/, /\bpicture\b/,
+        /\bhelp\b/, /[=?]/
+    ];
+    return patterns.some(pattern => pattern.test(lowerMessage));
 }
 
 function isAnalysisOnlyQuery(lowerMessage) {
@@ -908,6 +1021,122 @@ function processUserMessage(message) {
     }, 300);
 }
 
+/**
+ * Detects when the AI's reply commits to putting something on the canvas
+ * ("I'll write these answers now", "let me add a sun", "drawing it for you").
+ * When it does and the user hasn't disabled AI drawing, we follow through with
+ * a real collaborative draw so the canvas actually updates.
+ */
+function aiCommittedToDraw(response) {
+    const lower = response.toLowerCase();
+    const patterns = [
+        /i['’]ll\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
+        /i\s+will\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
+        /let me\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
+        /i['’]m\s+(drawing|writing|adding|sketching|putting|placing)/,
+        /(draw|write|add|sketch|put|place)(ing)?\s+(it|this|that|these|them|the\s+answers?)\s+(for you|now|on|onto)/,
+        /(on|onto)\s+(the|your)\s+canvas\s+(now|for you)/,
+        /directly\s+onto\s+(the|your)\s+canvas/,
+        /here['’]s\s+what\s+i['’]ll\s+(draw|add)/
+    ];
+    return patterns.some(pattern => pattern.test(lower));
+}
+
+/**
+ * After a normal chat reply, decide whether to actually render something on the
+ * canvas. Fires when the AI committed to drawing, or when the user explicitly
+ * asked for the result to be written on the canvas. Routes through the realtime
+ * server when connected, otherwise the direct collaborative-draw path.
+ * Returns true when a draw was triggered.
+ */
+async function maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt }) {
+    if (analysisOnly || !aiCanDraw || autoDrawPrompt) {
+        return false;
+    }
+
+    const lower = message.toLowerCase();
+    const wantsCanvasWrite = /\bwrite\b/.test(lower) || /on(to)?\s+(the\s+|your\s+)?canvas/.test(lower);
+
+    if (!wantsCanvasWrite && !aiCommittedToDraw(response)) {
+        return false;
+    }
+
+    const drawPrompt = `Write the following on the canvas as a clean, LEFT-aligned list placed in an empty area (do not write over my existing work). Keep it short and legible:\n\n${response}`;
+
+    if (isServerAvailable()) {
+        await handleServerDrawRequest(drawPrompt);
+    } else {
+        await handleCollaborativeDrawRequest(drawPrompt);
+    }
+    return true;
+}
+
+async function processMessageWithServer({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt }) {
+    if (isExplicitDrawRequest) {
+        await handleServerDrawRequest(message);
+        return;
+    }
+
+    try {
+        const includeCanvas = Boolean(canvasImage);
+        const response = await wsClient.requestChat(message, includeCanvas, canvasImage);
+        addAIMessage(response);
+
+        if (analysisOnly) {
+            return;
+        }
+
+        const drew = await maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt });
+
+        if (!drew) {
+            const drawInstructions = aiService?.parseDrawingInstructions?.(response) || [];
+            if (aiCanDraw && drawInstructions.length > 0) {
+                setTimeout(() => {
+                    drawInstructions.forEach(instruction => {
+                        if (instruction.type === 'shape') {
+                            drawAIShape(instruction.shape);
+                        }
+                    });
+                }, 1000);
+            }
+        }
+
+        if (autoDrawPrompt) {
+            await handleServerDrawRequest(autoDrawPrompt);
+        }
+    } catch (error) {
+        console.error('Realtime chat failed, falling back:', error);
+
+        if (aiService?.isInitialized?.() && !useDemoMode) {
+            await processMessageWithAI({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt });
+            return;
+        }
+
+        addAIMessage('⚠️ I lost my connection to the server. Reconnecting—please try again in a moment.');
+        await processMessageWithoutAI({ message, analysisOnly, isExplicitDrawRequest, autoDrawPrompt });
+    }
+}
+
+async function handleServerDrawRequest(message) {
+    lastDrawPrompt = message;
+    addAIMessage('🎨 Let me draw that for you...');
+
+    try {
+        const canvasImage = getCanvasSnapshot('image/png');
+        const fullPrompt = `${message}
+
+${buildCanvasPlacementHint(getDrawMode(message))}`;
+        const drawingData = await wsClient.requestAIDrawing(fullPrompt, canvasImage);
+        if (drawingData?.streamed) {
+            return; // strokes were rendered live as they streamed in
+        }
+        await executeAIDrawing(drawingData, message);
+    } catch (error) {
+        console.error('Realtime drawing failed, falling back:', error);
+        await handleCollaborativeDrawRequest(message);
+    }
+}
+
 async function processMessageWithAI({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt }) {
     if (isExplicitDrawRequest) {
         await handleCollaborativeDrawRequest(message);
@@ -922,15 +1151,19 @@ async function processMessageWithAI({ message, canvasData, canvasImage, analysis
             return;
         }
 
-        const drawInstructions = aiService.parseDrawingInstructions(response);
-        if (aiCanDraw && drawInstructions.length > 0) {
-            setTimeout(() => {
-                drawInstructions.forEach(instruction => {
-                    if (instruction.type === 'shape') {
-                        drawAIShape(instruction.shape);
-                    }
-                });
-            }, 1000);
+        const drew = await maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt });
+
+        if (!drew) {
+            const drawInstructions = aiService.parseDrawingInstructions(response);
+            if (aiCanDraw && drawInstructions.length > 0) {
+                setTimeout(() => {
+                    drawInstructions.forEach(instruction => {
+                        if (instruction.type === 'shape') {
+                            drawAIShape(instruction.shape);
+                        }
+                    });
+                }, 1000);
+            }
         }
 
         if (autoDrawPrompt) {
@@ -1594,6 +1827,248 @@ function snapPointToExistingContent(imageData, targetX, targetY, radius, options
     };
 }
 
+/**
+ * Scan the canvas for the bounding box of everything that isn't background.
+ * Sampled for speed. Used to keep AI additions out of the user's artwork.
+ */
+function getContentBounds(sampleStep = 4) {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data, width, height } = imageData;
+    let minX = width;
+    let minY = height;
+    let maxX = 0;
+    let maxY = 0;
+    let found = false;
+
+    for (let y = 0; y < height; y += sampleStep) {
+        for (let x = 0; x < width; x += sampleStep) {
+            const index = (y * width + x) * 4;
+            const alpha = data[index + 3];
+            if (alpha < 10) continue;
+            const r = data[index];
+            const g = data[index + 1];
+            const b = data[index + 2];
+            if (r > 245 && g > 245 && b > 245) continue;
+
+            found = true;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+        }
+    }
+
+    if (!found) {
+        return { hasContent: false, width, height };
+    }
+    return { hasContent: true, minX, minY, maxX, maxY, width, height };
+}
+
+/**
+ * Decide whether a draw request wants WRITTEN text (answers/labels) or an
+ * actual SHAPE drawing. "draw a boat" should produce shapes, not the words
+ * "a boat". Answer/label/write requests should produce text.
+ */
+function getDrawMode(prompt = '') {
+    const p = String(prompt).toLowerCase();
+    if (p.includes('write the following')) return 'text';
+    const textIntent = /\b(write|answer|answers|solve|solution|label|equation|formula|spell|caption|annotate|note)\b/.test(p);
+    return textIntent ? 'text' : 'shapes';
+}
+
+/**
+ * Build placement guidance for the AI. The empty-area targeting is shared, but
+ * text mode asks for a left-aligned list of text, while shapes mode asks for
+ * actual drawn shapes and explicitly forbids writing the subject as words.
+ */
+function buildCanvasPlacementHint(mode = 'text') {
+    const bounds = getContentBounds();
+    const w = canvas.width;
+    const h = canvas.height;
+    const round = value => Math.round(value);
+
+    if (!bounds.hasContent) {
+        const base = `Placement guidance: the canvas is ${w}x${h}px and currently empty. Center your work and keep it within 80% of the canvas, at least 20px from every edge.`;
+        if (mode === 'shapes') {
+            return `${base} Render the subject using "path"/"line"/"circle"/"rect" shapes and colors — do NOT write its name or description as text.`;
+        }
+        return base;
+    }
+
+    const rightSpace = w - bounds.maxX;
+    const bottomSpace = h - bounds.maxY;
+    const pad = 28;
+
+    let area;
+    if (rightSpace >= 180) {
+        const startX = Math.min(w - 160, bounds.maxX + pad);
+        const startY = Math.max(24, bounds.minY);
+        area = `to the RIGHT of the existing work — start around x=${round(startX)}, y=${round(startY)} and grow downward`;
+    } else if (bottomSpace >= 140) {
+        const startX = Math.max(24, bounds.minX);
+        const startY = Math.min(h - 120, bounds.maxY + pad);
+        area = `BELOW the existing work — start around x=${round(startX)}, y=${round(startY)} and grow downward`;
+    } else {
+        area = `in the largest empty margin of the canvas, away from the existing marks`;
+    }
+
+    const common = [
+        `Placement guidance: the canvas is ${w}x${h}px.`,
+        `The existing artwork occupies roughly (${round(bounds.minX)},${round(bounds.minY)}) to (${round(bounds.maxX)},${round(bounds.maxY)}).`,
+        `Place your additions ${area}.`,
+        `Do NOT overlap, cover, or draw on top of the existing marks, and stay at least 20px from every edge.`
+    ];
+
+    if (mode === 'shapes') {
+        common.push(`Render the subject using "path"/"line"/"circle"/"rect" shapes with colors. Do NOT write text, labels, or captions.`);
+    } else {
+        common.push(`Write them as a tidy, LEFT-aligned vertical list (about 36px between lines).`);
+        common.push(`Use "action":"text" with "snapToExisting": false, "align":"left", and absolute coordinates.`);
+    }
+
+    return common.join(' ');
+}
+
+/**
+ * Render a single AI draw command onto the canvas. Shared by the batch
+ * (non-streaming) path and the live streaming path.
+ */
+function renderDrawCommand(cmd, isRelative) {
+    switch (cmd.action) {
+        case 'path':
+            drawAIPath(cmd, isRelative);
+            break;
+        case 'circle':
+            drawAICircle(cmd, isRelative);
+            break;
+        case 'rect':
+            drawAIRect(cmd, isRelative);
+            break;
+        case 'text':
+            drawAIText(cmd, isRelative);
+            break;
+        case 'line':
+            drawAILine(cmd, isRelative);
+            break;
+        default:
+            console.warn('Unknown drawing action:', cmd.action);
+    }
+}
+
+function onStreamDrawStart(msg) {
+    const bounds = getContentBounds();
+    const mode = getDrawMode(lastDrawPrompt);
+    activeStreamDraw = {
+        isRelative: msg.coordinateSystem === 'relative',
+        description: msg.description || '',
+        prompt: lastDrawPrompt || '',
+        mode,
+        count: 0,
+        textLayout: (mode === 'text' && bounds.hasContent)
+            ? { anchor: computeTextAnchor(bounds), line: 0 }
+            : null
+    };
+    if (msg.description) {
+        addAIMessage(`✏️ ${msg.description}`);
+    }
+}
+
+function onStreamDrawCommand(msg) {
+    const cmd = msg.command;
+    if (!cmd || typeof cmd !== 'object') return;
+
+    if (!activeStreamDraw) {
+        activeStreamDraw = { isRelative: false, description: '', prompt: lastDrawPrompt || '', mode: getDrawMode(lastDrawPrompt), count: 0, textLayout: null };
+    }
+
+    if (cmd.action === 'text') {
+        if (activeStreamDraw.mode === 'shapes' && cmd.forceText !== true) {
+            return;
+        }
+        if (!shouldAllowTextCommand(cmd, activeStreamDraw.prompt, activeStreamDraw.description)) {
+            return;
+        }
+    }
+
+    try {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        renderDrawCommand(applyTextLayout(cmd, activeStreamDraw.textLayout), activeStreamDraw.isRelative);
+        ctx.restore();
+        activeStreamDraw.count++;
+    } catch (error) {
+        console.error('Error rendering streamed command:', error, cmd);
+    }
+}
+
+function onStreamDrawEnd() {
+    if (activeStreamDraw && activeStreamDraw.count > 0) {
+        saveState();
+        addAIMessage('Done! What do you think? Want to add to it?');
+    }
+    activeStreamDraw = null;
+}
+
+/**
+ * Compute a deterministic anchor for writing AI text (answers/labels) in the
+ * empty area of the canvas. The MODEL decides what to write; the CLIENT decides
+ * where — so answers never overlap the user's handwriting regardless of the
+ * coordinates the model guesses.
+ */
+function computeTextAnchor(bounds = getContentBounds()) {
+    const w = canvas.width;
+    const h = canvas.height;
+    const margin = 24;
+    const lineHeight = 40;
+
+    if (!bounds.hasContent) {
+        return { x: margin, y: margin + 16, lineHeight };
+    }
+
+    const rightSpace = w - bounds.maxX;
+    if (rightSpace >= 150) {
+        return {
+            x: Math.min(w - margin - 30, bounds.maxX + margin),
+            y: Math.max(margin + 16, bounds.minY + 16),
+            lineHeight
+        };
+    }
+
+    const bottomSpace = h - bounds.maxY;
+    if (bottomSpace >= 90) {
+        return {
+            x: Math.max(margin, bounds.minX),
+            y: Math.min(h - margin, bounds.maxY + margin),
+            lineHeight
+        };
+    }
+
+    return { x: margin, y: margin + 16, lineHeight };
+}
+
+/**
+ * If this is a text command and we have a layout anchor, override the model's
+ * coordinates so the text is placed in the clean empty area as a left-aligned
+ * list. Non-text commands pass through unchanged. Mutates layout.line.
+ */
+function applyTextLayout(cmd, layout) {
+    if (!layout || cmd.action !== 'text') {
+        return cmd;
+    }
+    const positioned = {
+        ...cmd,
+        x: layout.anchor.x,
+        y: layout.anchor.y + layout.line * layout.anchor.lineHeight,
+        align: 'left',
+        baseline: 'middle',
+        snapToExisting: false,
+        coordinateSystem: 'absolute',
+        relative: false
+    };
+    layout.line++;
+    return positioned;
+}
+
 async function executeAIDrawing(drawingData, originalPrompt = '') {
     if (!drawingData?.commands?.length) {
         console.warn('No drawing commands to execute');
@@ -1605,10 +2080,17 @@ async function executeAIDrawing(drawingData, originalPrompt = '') {
     }
 
     const isRelative = drawingData.coordinateSystem === 'relative';
+    const drawMode = getDrawMode(originalPrompt);
     const commandsToRun = drawingData.commands.filter(cmd => {
-        if (cmd.action === 'text' && !shouldAllowTextCommand(cmd, originalPrompt, drawingData.description)) {
-            console.info('Skipping AI text command for clarity:', cmd);
-            return false;
+        if (cmd.action === 'text') {
+            if (drawMode === 'shapes' && cmd.forceText !== true) {
+                console.info('Skipping AI text command in shape-drawing mode:', cmd);
+                return false;
+            }
+            if (!shouldAllowTextCommand(cmd, originalPrompt, drawingData.description)) {
+                console.info('Skipping AI text command for clarity:', cmd);
+                return false;
+            }
         }
         return true;
     });
@@ -1618,32 +2100,21 @@ async function executeAIDrawing(drawingData, originalPrompt = '') {
         return;
     }
 
+    // The model is unreliable at picking coordinates, so place any text in the
+    // empty area ourselves as a clean left-aligned list (text mode only).
+    const bounds = getContentBounds();
+    const textLayout = (drawMode === 'text' && bounds.hasContent)
+        ? { anchor: computeTextAnchor(bounds), line: 0 }
+        : null;
+
     for (const cmd of commandsToRun) {
         await new Promise(resolve => setTimeout(resolve, 300));
 
         try {
             ctx.save();
             ctx.globalCompositeOperation = 'source-over';
-            
-            switch(cmd.action) {
-                case 'path':
-                    drawAIPath(cmd, isRelative);
-                    break;
-                case 'circle':
-                    drawAICircle(cmd, isRelative);
-                    break;
-                case 'rect':
-                    drawAIRect(cmd, isRelative);
-                    break;
-                case 'text':
-                    drawAIText(cmd, isRelative);
-                    break;
-                case 'line':
-                    drawAILine(cmd, isRelative);
-                    break;
-                default:
-                    console.warn('Unknown drawing action:', cmd.action);
-            }
+
+            renderDrawCommand(applyTextLayout(cmd, textLayout), isRelative);
 
             ctx.restore();
         } catch (error) {
@@ -1901,8 +2372,11 @@ async function handleCollaborativeDrawRequest(message) {
     
     try {
         const canvasImage = getCanvasSnapshot('image/png');
+        const fullPrompt = `${message}
+
+${buildCanvasPlacementHint(getDrawMode(message))}`;
         
-        const drawingData = await aiService.requestCollaborativeDraw(message, canvasImage);
+        const drawingData = await aiService.requestCollaborativeDraw(fullPrompt, canvasImage);
         
     await executeAIDrawing(drawingData, message);
         
@@ -1914,4 +2388,5 @@ async function handleCollaborativeDrawRequest(message) {
 }
 
 console.log('Work With Me - AI Drawing Assistant loaded!');
+initializeRealtime();
 initializeAI();

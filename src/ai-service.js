@@ -6,8 +6,9 @@
 class AIService {
     constructor() {
         this.apiKey = null;
-        this.model = 'gpt-4o-mini';
-        this.visionModel = 'gpt-4.1';
+        this.model = localStorage.getItem('openai_model') || 'gpt-5.5';
+        this.visionModel = localStorage.getItem('openai_vision_model') || 'gpt-5.5';
+        this.reasoningEffort = localStorage.getItem('openai_reasoning_effort') || 'low';
         this.conversationHistory = [];
         this.useVision = false;
 
@@ -56,6 +57,28 @@ Be PRECISE and SPECIFIC in your observations. If you're not sure, say so. Keep r
 
     isInitialized() {
         return this.initialized && this.apiKey;
+    }
+
+    /**
+     * Build a Chat Completions body that works for both older models
+     * (gpt-4.x: max_tokens + temperature + penalties) and newer reasoning
+     * models (GPT-5 / o-series: max_completion_tokens + reasoning_effort,
+     * default temperature only).
+     */
+    buildRequestBody(model, messages, { maxTokens, temperature, penalties = false } = {}) {
+        const body = { model, messages };
+        if (/^(gpt-5|o\d)/i.test(model)) {
+            if (maxTokens) body.max_completion_tokens = maxTokens;
+            body.reasoning_effort = this.reasoningEffort || 'low';
+        } else {
+            if (maxTokens) body.max_tokens = maxTokens;
+            if (typeof temperature === 'number') body.temperature = temperature;
+            if (penalties) {
+                body.presence_penalty = 0.6;
+                body.frequency_penalty = 0.3;
+            }
+        }
+        return body;
     }
 
     async analyzeCanvas(canvasData, userMessage = null, canvasImage = null) {
@@ -169,14 +192,13 @@ Be PRECISE and SPECIFIC in your observations. If you're not sure, say so. Keep r
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${this.apiKey}`
             },
-            body: JSON.stringify({
-                model: modelToUse,
-                messages: messages,
-                temperature: 0.7,
-                max_tokens: maxTokens,
-                presence_penalty: 0.6,
-                frequency_penalty: 0.3
-            })
+            body: JSON.stringify(
+                this.buildRequestBody(modelToUse, messages, {
+                    maxTokens,
+                    temperature: 0.7,
+                    penalties: true
+                })
+            )
         });
 
         if (!response.ok) {
@@ -256,6 +278,11 @@ Optional fields:
 - "snapToExisting": true (default for filled shapes) when you want the client to align the element to nearby artwork, or false if you need exact absolute placement
 - "maxShift" / "minSamples" provide hints for how much alignment freedom is acceptable
 Never erase or cover the existing artwork. Avoid large background fills or full-canvas rectangles. Add small, complementary elements that enhance what's already there.
+CRITICAL PLACEMENT RULES:
+- NEVER place text or shapes on top of existing handwriting or marks. Follow the "Placement guidance" in the user's message and write only in the empty area it points to.
+- When asked to DRAW a subject (a boat, sun, flower, house, etc.), render it with "path"/"line"/"circle"/"rect" shapes and colors. Do NOT just write the subject's name or description as text — actually draw it.
+- When writing answers or labels, use "action":"text" with "snapToExisting": false, "align":"left", and absolute coordinates, laid out as a tidy vertical list (increase y by about 36px per line).
+- Keep every element fully inside the canvas and at least 20px from each edge.
 Use colors that complement the existing drawing.
 Be creative but keep drawings simple and clear.`
             },
@@ -287,12 +314,12 @@ Be creative but keep drawings simple and clear.`
                     'Authorization': `Bearer ${this.apiKey}`,
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({
-                    model: this.visionModel,
-                    messages: messages,
-                    max_tokens: 1000,
-                    temperature: 0.8
-                })
+                body: JSON.stringify(
+                    this.buildRequestBody(this.visionModel, messages, {
+                        maxTokens: 1000,
+                        temperature: 0.8
+                    })
+                )
             });
 
             if (!response.ok) {

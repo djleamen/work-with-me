@@ -119,6 +119,10 @@
                         <input type="checkbox" id="aiCollaborate" checked>
                         <span>AI can draw</span>
                     </label>
+                    <div class="connection-status" id="connectionStatus" data-state="connecting" title="Real-time server connection">
+                        <span class="connection-dot"></span>
+                        <span id="connectionStatusText">Connecting…</span>
+                    </div>
                 </div>
             </div>
 
@@ -189,7 +193,7 @@
     </div>
 
     <script src="ai-service.js"></script>
-    <script src="app.js"></script>
     <script src="ws-client.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>

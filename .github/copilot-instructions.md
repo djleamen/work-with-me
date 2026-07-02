@@ -209,7 +209,9 @@ The frontend uses vanilla JS (no frameworks) to:
 
 ## Environment Variables
 - `OPENAI_API_KEY`: Required for AI features (in `.env`)
-- `OPENAI_MODEL`: Optional, defaults to `gpt-4o-mini`
+- `OPENAI_MODEL`: Optional text-chat model, defaults to `gpt-5.5`
+- `OPENAI_VISION_MODEL`: Optional vision model for canvas analysis & drawing, defaults to `gpt-5.5`
+- `OPENAI_REASONING_EFFORT`: Optional reasoning effort for GPT-5/o-series models (`none`|`low`|`medium`|`high`), defaults to `low`
 - `AI_TEMPERATURE`: Optional, defaults to 0.7
 
 ## Dependencies Management
