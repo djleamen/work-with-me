@@ -61,10 +61,9 @@ function requireOpenAI() {
   return openai;
 }
 
-// Models are configurable so you can point them at the strongest model your
-// account has access to without touching code. Vision-capable tasks (canvas
-// analysis + collaborative drawing) use VISION_MODEL.
-const TEXT_MODEL = process.env.OPENAI_MODEL || 'gpt-5.5';
+// The model is configurable so you can point it at the strongest vision-capable
+// model your account has access to without touching code. Every turn includes a
+// canvas snapshot, so a single vision model handles chat and drawing together.
 const VISION_MODEL = process.env.OPENAI_VISION_MODEL || 'gpt-5.5';
 
 function isNextGenModel(model) {
@@ -74,9 +73,10 @@ function isNextGenModel(model) {
 // Newer reasoning models (GPT-5 / o-series) use max_completion_tokens, only
 // support the default temperature, and accept reasoning_effort. Older models
 // (gpt-4.x) use max_tokens + temperature. This keeps both working.
-function buildCompletionRequest(model, messages, { maxTokens, temperature, stream } = {}) {
+function buildCompletionRequest(model, messages, { maxTokens, temperature, stream, json } = {}) {
   const request = { model, messages };
   if (stream) request.stream = true;
+  if (json) request.response_format = { type: 'json_object' };
   if (isNextGenModel(model)) {
     if (maxTokens) request.max_completion_tokens = maxTokens;
     request.reasoning_effort = process.env.OPENAI_REASONING_EFFORT || 'low';
@@ -87,59 +87,72 @@ function buildCompletionRequest(model, messages, { maxTokens, temperature, strea
   return request;
 }
 
-// Shared system prompt for generating structured, canvas-aware drawing commands
-const DRAWING_SYSTEM_PROMPT = `You are an AI drawing assistant that can create structured drawing commands.
-When asked to draw something, respond with a JSON object containing drawing instructions.
+// One prompt for the whole assistant: the model sees the canvas every turn and
+// decides both what to say in chat and what (if anything) to add to the canvas.
+// Keep in sync with the copy in src/ai-service.js (used when the browser talks
+// to OpenAI directly because this server is not running).
+const ASSISTANT_SYSTEM_PROMPT = `You are the AI partner in "Work With Me", a shared whiteboard app. The user draws and writes by hand on a canvas. You talk to them in a narrow chat panel beside it, and you can also write and draw on the same canvas. People use it for homework and maths as much as for sketching, so think of yourself as someone sitting next to them at a whiteboard with your own pen.
 
-Format:
-{
-    "description": "Brief description of what you're drawing",
-    "commands": [
-        {"action": "path", "points": [[x1,y1], [x2,y2]], "color": "#hex", "width": 3, "fill": false},
-        {"action": "circle", "x": 120, "y": 180, "radius": 40, "color": "#hex", "fill": true, "snapToExisting": true},
-        {"action": "rect", "x": 60, "y": 80, "width": 120, "height": 90, "color": "#hex", "fill": false, "snapToExisting": false},
-        {"action": "text", "x": 220, "y": 140, "text": "Hello", "color": "#hex", "size": 20}
-    ]
-}
+Each turn you receive the user's message, a few facts about the canvas, and a snapshot of it. The snapshot has a faint blue coordinate grid with pixel labels laid over it. The grid exists only so you can read positions accurately. It is not part of the user's work, so never mention it or treat it as something they drew. All coordinates are canvas pixels with (0,0) at the top-left, x increasing to the right and y increasing downward.
 
-Coordinate system: treat (0,0) as the TOP-LEFT corner of the canvas. The canvas can be up to 1024x1024, but aim to keep drawings within 90% of its width/height.
-Optional fields:
-- "coordinateSystem": "absolute" (default) or "relative" to shift from the center
-- "snapToExisting": true (default for filled shapes) when you want the client to align the element to nearby artwork, or false if you need exact absolute placement
-- "maxShift" / "minSamples" provide hints for how much alignment freedom is acceptable
-Never erase or cover the existing artwork. Avoid large background fills or full-canvas rectangles. Add small, complementary elements that enhance what's already there.
-CRITICAL PLACEMENT RULES:
-- NEVER place text or shapes on top of existing handwriting or marks. Follow the "Placement guidance" in the user's message and write only in the empty area it points to.
-- When asked to DRAW a subject (a boat, sun, flower, house, etc.), render it with "path"/"line"/"circle"/"rect" shapes and colors. Do NOT just write the subject's name or description as text — actually draw it.
-- When writing answers or labels, use "action":"text" with "snapToExisting": false, "align":"left", and absolute coordinates, laid out as a tidy vertical list (increase y by about 36px per line).
-- Keep every element fully inside the canvas and at least 20px from each edge.
-Use colors that complement the existing drawing.
-Be creative but keep drawings simple and clear.`;
+Respond with one JSON object and nothing else, with "reply" first:
+{"reply": "what you say in the chat panel", "commands": [what you add to the canvas]}
+
+The reply
+- The chat panel shows plain text only. Markdown and LaTeX are not rendered, so asterisks, backslashes, \\[ \\] and \\sqrt{} would show up literally. Write maths with ordinary characters: √25, x², 3/4, ×, ÷, ≤, π.
+- Keep it short, because the panel is narrow: usually one to three sentences. For a maths problem, give the working as a few short lines separated by newlines, ending with the answer.
+- Read what is actually on the canvas and be specific about it. If something is ambiguous or hard to read, say what you think it is and ask.
+- When you add something to the canvas, say briefly what you added. Never tell the user to write something that you can write for them.
+
+The canvas commands
+Use [] when nothing should be added. The available commands are:
+{"action":"text","x":0,"y":0,"text":"10","size":60,"color":"#000000"}
+  x is the left edge of the text, y is the vertical centre of the line, and size is the height of a digit or capital letter in pixels. Text is drawn in a handwriting style, one line per command.
+{"action":"line","x1":0,"y1":0,"x2":0,"y2":0,"color":"#000000","width":3}
+{"action":"path","points":[[0,0],[10,10]],"color":"#000000","width":3,"fill":false}
+  A polyline through the points. With "fill": true it is closed and filled. Use plenty of points for curves.
+{"action":"circle","x":0,"y":0,"radius":40,"color":"#000000","width":3,"fill":false}
+  x,y is the centre.
+{"action":"rect","x":0,"y":0,"width":120,"height":80,"color":"#000000","lineWidth":3,"fill":false}
+  x,y is the top-left corner.
+Commands are drawn in order, so later ones sit on top of earlier ones. You can only add to the canvas. You cannot erase or move anything, so if asked to, say so and mention that the user has an eraser and an Undo button.
+
+Deciding what goes on the canvas
+The canvas is the user's work, so add only what they asked for, put it where a person would put it, and never cover or cross their marks.
+- When they ask you to solve, answer, finish or fill in something they have written, write just the result in the place it belongs. For "5 + √25 =" that means "10" immediately to the right of the equals sign, on the same line. The explanation belongs in the reply. Put working on the canvas only if they ask to see the steps there, and then as short lines below their work.
+- An expression left waiting for an answer (ending in "=", a blank, or a question mark) is an invitation: when they ask you to solve it, write the answer on the canvas as well as explaining in the reply.
+- Make your writing look like it belongs with theirs. Read the height of their digits or letters off the grid and use that as "size", centre "y" on their line of writing, leave a gap of about half a character before your text, and use their ink colour unless they ask for something else.
+- When they ask you to draw something, draw it with line, path, circle and rect commands, using enough parts and points that it is recognisable, in empty space, at a size that suits the canvas and what is already there. Do not write the name of the thing in place of drawing it. Add text only when they ask for labels or writing.
+- If the canvas facts say AI drawing is turned off, "commands" must be [] and the reply gives the answer in words instead.
+- If there is no sensible place for something, or you cannot tell what they want added, ask in the reply rather than guessing.
+
+Automatic check-ins
+Sometimes, in place of a user message, you get a note saying this is an automatic check-in. It is sent when the user pauses while drawing, and they have not asked you anything. An interruption has to earn its place, so reply with an empty string unless you have something they would be glad to hear right now: for example they have finished writing a problem you could solve (offer in one short sentence), there is a mistake in their working, or a drawing has clearly come together and you have one specific suggestion. Stay silent for half-finished work or a lone stroke or symbol. Do not comment on how neat their handwriting is, do not praise for the sake of it, and do not repeat something you said at an earlier check-in. "commands" must be [] during a check-in.`;
 
 /**
- * Incrementally extracts the `description` string and each object inside the
+ * Incrementally extracts the `reply` string and each object inside the
  * `commands: [ ... ]` array from a JSON response as it streams in, so the
- * client can render strokes the moment the model emits them.
+ * client can show the reply and render strokes the moment the model emits them.
  */
-class StreamingDrawingParser {
+class StreamingTurnParser {
   constructor() {
     this.buffer = '';
-    this.descriptionEmitted = false;
+    this.replyEmitted = false;
     this.commandsStarted = false;
     this.cursor = 0;
     this.arrayDone = false;
   }
 
-  push(chunk, onDescription, onCommand) {
+  push(chunk, onReply, onCommand) {
     this.buffer += chunk;
 
-    if (!this.descriptionEmitted) {
-      const match = this.buffer.match(/"description"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+    if (!this.replyEmitted) {
+      const match = this.buffer.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)"/);
       if (match) {
-        this.descriptionEmitted = true;
+        this.replyEmitted = true;
         let value = match[1];
         try { value = JSON.parse(`"${match[1]}"`); } catch { /* keep raw */ }
-        onDescription(value);
+        onReply(value);
       }
     }
 
@@ -203,22 +216,9 @@ class DrawingSession {
   constructor(ws, sessionId) {
     this.ws = ws;
     this.sessionId = sessionId;
-    this.conversationHistory = [];
+    this.conversationHistory = [{ role: 'system', content: ASSISTANT_SYSTEM_PROMPT }];
     this.canvasHistory = [];
-    this.lastAnalysis = null;
     this.createdAt = Date.now();
-    
-    this.conversationHistory.push({
-      role: 'system',
-      content: `You are an AI drawing assistant in a real-time collaborative drawing app. You can:
-- SEE the canvas through image analysis
-- Provide real-time feedback and suggestions
-- Help solve math problems visually
-- Draw shapes and provide coordinates for rendering
-- Offer drawing tips and art guidance
-
-Be helpful, encouraging, and specific about what you observe in the drawings.`
-    });
   }
 
   addCanvasSnapshot(imageData) {
@@ -226,240 +226,86 @@ Be helpful, encouraging, and specific about what you observe in the drawings.`
       timestamp: Date.now(),
       data: imageData
     });
-    
+
     // keep only last 5 snapshots to save memory
     if (this.canvasHistory.length > 5) {
       this.canvasHistory.shift();
     }
   }
 
-  async analyzeCanvas(imageDataUrl, userMessage = null) {
-    try {
-      const messages = [...this.conversationHistory];
-            messages.push({
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: userMessage || 'Analyze the current canvas drawing and provide feedback.'
-          },
-          {
-            type: 'image_url',
-            image_url: {
-              url: imageDataUrl,
-              detail: 'high'
-            }
-          }
-        ]
-      });
-
-      const response = await requireOpenAI().chat.completions.create(
-        buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 800, temperature: 0.7 })
-      );
-
-      const aiResponse = response.choices[0].message.content;
-
-      this.conversationHistory.push({
-        role: 'user',
-        content: userMessage || 'Analyzed canvas drawing'
-      });
-      
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: aiResponse
-      });
-
-      if (this.conversationHistory.length > 21) {
-        this.conversationHistory = [
-          this.conversationHistory[0],
-          ...this.conversationHistory.slice(-20)
-        ];
-      }
-
-      this.lastAnalysis = {
-        timestamp: Date.now(),
-        response: aiResponse
-      };
-
-      return aiResponse;
-
-    } catch (error) {
-      console.error('Analysis error:', error);
-      throw error;
-    }
-  }
-
-  async sendMessage(message, includeCanvas = false, canvasImage = null) {
-    try {
-      const messages = [...this.conversationHistory];
-      
-      if (includeCanvas && canvasImage) {
-        messages.push({
-          role: 'user',
-          content: [
-            { type: 'text', text: message },
-            {
-              type: 'image_url',
-              image_url: {
-                url: canvasImage,
-                detail: 'high'
-              }
-            }
-          ]
-        });
-      } else {
-        messages.push({
-          role: 'user',
-          content: message
-        });
-      }
-
-      const model = includeCanvas ? VISION_MODEL : TEXT_MODEL;
-      const response = await requireOpenAI().chat.completions.create(
-        buildCompletionRequest(model, messages, { maxTokens: includeCanvas ? 800 : 500, temperature: 0.7 })
-      );
-
-      const aiResponse = response.choices[0].message.content;
-
-      this.conversationHistory.push({
-        role: 'user',
-        content: message
-      });
-      
-      this.conversationHistory.push({
-        role: 'assistant',
-        content: aiResponse
-      });
-
-      if (this.conversationHistory.length > 21) {
-        this.conversationHistory = [
-          this.conversationHistory[0],
-          ...this.conversationHistory.slice(-20)
-        ];
-      }
-
-      return aiResponse;
-
-    } catch (error) {
-      console.error('Message error:', error);
-      throw error;
-    }
-  }
-
-  async generateDrawing(prompt, canvasImage = null) {
-    try {
-      const userContent = [
-        {
-          type: 'text',
-          text: `Please draw: ${prompt}\n\nProvide drawing commands as JSON.`
-        }
-      ];
-
-      if (canvasImage) {
-        userContent.push({
-          type: 'image_url',
-          image_url: { url: canvasImage, detail: 'low' }
-        });
-      }
-
-      const messages = [
-        { role: 'system', content: DRAWING_SYSTEM_PROMPT },
-        { role: 'user', content: userContent }
-      ];
-
-      const response = await requireOpenAI().chat.completions.create(
-        buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 1000, temperature: 0.8 })
-      );
-
-      const content = response.choices[0].message.content;
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return {
-            description: parsed.description || '',
-            commands: Array.isArray(parsed.commands) ? parsed.commands : [],
-            coordinateSystem: parsed.coordinateSystem
-          };
-        } catch (parseError) {
-          console.warn('Could not parse drawing commands:', parseError);
-        }
-      }
-
-      return { description: content, commands: [] };
-
-    } catch (error) {
-      console.error('Drawing generation error:', error);
-      throw error;
-    }
-  }
-
   /**
-   * Streaming variant of generateDrawing. Invokes onDescription once and
-   * onCommand for each command as soon as it is fully parsed from the model's
-   * streamed output. Returns { description, count }.
+   * One assistant turn. The model gets the conversation so far, the user's
+   * message (or a check-in note), the client's canvas facts and a snapshot,
+   * and streams back a chat reply plus canvas commands. onReply fires once
+   * (only for a non-empty reply) and onCommand once per command, as soon as
+   * each is fully parsed. Returns { reply, count }.
    */
-  async streamDrawing(prompt, canvasImage, { onDescription, onCommand } = {}) {
+  async assist({ content, context, canvasImage }, { onReply, onCommand } = {}) {
     const userContent = [
-      {
-        type: 'text',
-        text: `Please draw: ${prompt}\n\nProvide drawing commands as JSON.`
-      }
+      { type: 'text', text: context ? `${content}\n\n[Canvas facts] ${context}` : content }
     ];
-
-    if (canvasImage) {
-      userContent.push({
-        type: 'image_url',
-        image_url: { url: canvasImage, detail: 'low' }
-      });
+    if (typeof canvasImage === 'string' && canvasImage.startsWith('data:image/')) {
+      userContent.push({ type: 'image_url', image_url: { url: canvasImage, detail: 'high' } });
     }
-
-    const messages = [
-      { role: 'system', content: DRAWING_SYSTEM_PROMPT },
-      { role: 'user', content: userContent }
-    ];
 
     const stream = await requireOpenAI().chat.completions.create(
-      buildCompletionRequest(VISION_MODEL, messages, { maxTokens: 1000, temperature: 0.8, stream: true })
+      buildCompletionRequest(
+        VISION_MODEL,
+        [...this.conversationHistory, { role: 'user', content: userContent }],
+        { maxTokens: 4000, temperature: 0.4, stream: true, json: true }
+      )
     );
 
-    const parser = new StreamingDrawingParser();
-    let description = '';
+    const parser = new StreamingTurnParser();
+    let reply = '';
     let count = 0;
     let full = '';
+    const emitReply = (value) => {
+      reply = typeof value === 'string' ? value : '';
+      if (reply.trim()) onReply?.(reply);
+    };
+    const emitCommand = (command) => {
+      count++;
+      onCommand?.(command);
+    };
 
     for await (const chunk of stream) {
       const delta = chunk.choices?.[0]?.delta?.content || '';
       if (!delta) continue;
       full += delta;
-      parser.push(
-        delta,
-        (desc) => { description = desc; onDescription?.(desc); },
-        (cmd) => { count++; onCommand?.(cmd); }
-      );
+      parser.push(delta, emitReply, emitCommand);
     }
 
-    // If streaming yielded no commands (e.g. the model wrapped or reordered the
-    // JSON), fall back to parsing the full text once.
-    if (count === 0) {
-      const jsonMatch = full.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (!description && parsed.description) {
-            description = parsed.description;
-            onDescription?.(description);
-          }
-          for (const cmd of (parsed.commands || [])) {
-            count++;
-            onCommand?.(cmd);
-          }
-        } catch { /* leave count at 0 */ }
+    // If nothing could be picked out of the stream (e.g. a model that ignored
+    // the JSON format), parse the whole text once, or show it as the reply.
+    if (!parser.replyEmitted && count === 0 && full.trim()) {
+      try {
+        const parsed = JSON.parse(full.match(/\{[\s\S]*\}/)?.[0] ?? full);
+        emitReply(parsed.reply);
+        (Array.isArray(parsed.commands) ? parsed.commands : []).forEach(emitCommand);
+      } catch {
+        emitReply(full.trim());
       }
     }
 
-    return { description, count };
+    // Silent check-ins are not worth remembering.
+    if (reply.trim() || count > 0) {
+      this.conversationHistory.push({ role: 'user', content });
+      this.conversationHistory.push({
+        role: 'assistant',
+        // Long stroke lists are dropped from history; the next snapshot shows them anyway.
+        content: full.length <= 4000 ? full : JSON.stringify({ reply, commands: [] })
+      });
+
+      if (this.conversationHistory.length > 21) {
+        this.conversationHistory = [
+          this.conversationHistory[0],
+          ...this.conversationHistory.slice(-20)
+        ];
+      }
+    }
+
+    return { reply, count };
   }
 }
 
@@ -469,6 +315,12 @@ wss.on('connection', (ws) => {
   sessions.set(sessionId, session);
 
   console.log(`New session connected: ${sessionId}`);
+
+  // A reply can finish streaming after the browser has gone away; sending on a
+  // closed socket throws, so drop those instead.
+  const send = (payload) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(payload));
+  };
 
   ws.send(JSON.stringify({
     type: 'connected',
@@ -497,47 +349,25 @@ wss.on('connection', (ws) => {
           break;
         }
 
-        case 'analyze_canvas': {
-          if (typeof message.imageData !== 'string' || !message.imageData.trim()) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              message: 'analyze_canvas requires imageData'
-            }));
-            break;
-          }
-          const analysis = await session.analyzeCanvas(
-            message.imageData,
-            message.userMessage
-          );
-          
-          ws.send(JSON.stringify({
-            type: 'ai_response',
-            content: analysis,
-            timestamp: Date.now()
-          }));
-          break;
-        }
-
-        case 'chat_message': {
+        case 'assist': {
           if (typeof message.content !== 'string' || !message.content.trim()) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              message: 'chat_message requires non-empty content'
-            }));
+            send({ type: 'assist_error', turnId: message.turnId, message: 'assist requires non-empty content' });
             break;
           }
-          const needsCanvas = message.includeCanvas || shouldUseVision(message.content);
-          const response = await session.sendMessage(
-            message.content,
-            needsCanvas,
-            needsCanvas ? message.canvasImage : null
-          );
-          
-          ws.send(JSON.stringify({
-            type: 'ai_response',
-            content: response,
-            timestamp: Date.now()
-          }));
+
+          // Every event carries the client's turnId so overlapping turns
+          // (a check-in and a chat message, say) never get mixed up.
+          const turnId = message.turnId;
+          try {
+            const result = await session.assist(message, {
+              onReply: (content) => send({ type: 'assist_reply', turnId, content }),
+              onCommand: (command) => send({ type: 'assist_command', turnId, command })
+            });
+            send({ type: 'assist_done', turnId, reply: result.reply, count: result.count });
+          } catch (assistError) {
+            console.error('Assist error:', assistError);
+            send({ type: 'assist_error', turnId, message: assistError.message });
+          }
           break;
         }
 
@@ -548,73 +378,6 @@ wss.on('connection', (ws) => {
             timestamp: Date.now()
           }));
           break;
-
-        case 'request_ai_drawing': {
-          if (typeof message.prompt !== 'string' || !message.prompt.trim()) {
-            ws.send(JSON.stringify({
-              type: 'error',
-              message: 'request_ai_drawing requires a non-empty prompt'
-            }));
-            break;
-          }
-
-          let started = false;
-          const startIfNeeded = (description) => {
-            if (started) return;
-            started = true;
-            ws.send(JSON.stringify({
-              type: 'ai_drawing_start',
-              description: description || '',
-              timestamp: Date.now()
-            }));
-          };
-
-          try {
-            const result = await session.streamDrawing(message.prompt, message.canvasImage, {
-              onDescription: (description) => startIfNeeded(description),
-              onCommand: (command) => {
-                startIfNeeded('');
-                ws.send(JSON.stringify({
-                  type: 'ai_draw_command',
-                  command,
-                  timestamp: Date.now()
-                }));
-              }
-            });
-
-            if (result.count > 0) {
-              ws.send(JSON.stringify({
-                type: 'ai_drawing_end',
-                description: result.description,
-                count: result.count,
-                timestamp: Date.now()
-              }));
-            } else {
-              // Nothing usable streamed — fall back to a single full payload
-              const drawing = await session.generateDrawing(message.prompt, message.canvasImage);
-              ws.send(JSON.stringify({
-                type: 'ai_drawing',
-                description: drawing.description,
-                commands: drawing.commands,
-                coordinateSystem: drawing.coordinateSystem,
-                fromSession: sessionId,
-                timestamp: Date.now()
-              }));
-            }
-          } catch (streamError) {
-            console.error('Streaming drawing failed, falling back to full generation:', streamError);
-            const drawing = await session.generateDrawing(message.prompt, message.canvasImage);
-            ws.send(JSON.stringify({
-              type: 'ai_drawing',
-              description: drawing.description,
-              commands: drawing.commands,
-              coordinateSystem: drawing.coordinateSystem,
-              fromSession: sessionId,
-              timestamp: Date.now()
-            }));
-          }
-          break;
-        }
 
         case 'broadcast_drawing': {
           const drawingData = {
@@ -668,18 +431,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// could improve this with NLP keyword detection?
-function shouldUseVision(message) {
-  const visionKeywords = [
-    'what am i drawing', 'what did i draw', 'what is this', 'what do you see',
-    'can you see', 'look at', 'analyze', 'describe', 'recognize', 'identify',
-    'what shape', 'what color', 'read this', 'what equation', 'solve this'
-  ];
-  
-  const lowerMessage = message.toLowerCase();
-  return visionKeywords.some(keyword => lowerMessage.includes(keyword));
-}
-
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -719,8 +470,7 @@ Endpoints:
    - WS   /        - WebSocket connection
 
 API Key: ${process.env.OPENAI_API_KEY ? '✓ Loaded' : '✗ Missing'}
-Text model: ${TEXT_MODEL}
-Vision model: ${VISION_MODEL}
+Model: ${VISION_MODEL}
   `);
 });
 
