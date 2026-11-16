@@ -319,6 +319,7 @@ function addMessage(content, isUser = false) {
     messageDiv.appendChild(contentDiv);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return messageDiv;
 }
 
 function addAIMessage(content) {
@@ -397,8 +398,8 @@ let aiService = null;
 let useDemoMode = false;
 let wsClient = null;
 let serverWelcomeShown = false;
-let lastDrawPrompt = '';
-let activeStreamDraw = null;
+let activeTurns = 0;
+let userTurnSeq = 0;
 
 function isServerAvailable() {
     return Boolean(wsClient?.isConnected?.());
@@ -454,11 +455,6 @@ function initializeRealtime() {
         }
     };
     wsClient.on('connected', () => onServerConnected());
-
-    // Live co-drawing: render each stroke the moment it streams in.
-    wsClient.on('ai_drawing_start', (msg) => onStreamDrawStart(msg));
-    wsClient.on('ai_draw_command', (msg) => onStreamDrawCommand(msg));
-    wsClient.on('ai_drawing_end', () => onStreamDrawEnd());
 
     updateConnectionStatus('connecting');
     wsClient.connect().catch(err => {
@@ -547,40 +543,70 @@ document.getElementById('aiCollaborate').addEventListener('change', (e) => {
     }
 });
 
+// Proactive check-ins: once the user has stopped drawing for a moment, the AI
+// looks at the canvas and decides for itself whether a comment is worth making.
+const CHECK_IN_IDLE_MS = 4000;
+const CHECK_IN_MIN_INK_CHANGE = 300;
+const CHECK_IN_NOTE = '[Automatic check-in: the user paused while drawing and has not sent a message.]';
+
+function isAIAvailable() {
+    return isServerAvailable() || Boolean(aiService?.isInitialized?.() && !useDemoMode);
+}
+
 function analyzeDrawing() {
     if (!aiEnabled) return;
     
     clearTimeout(drawingTimeout);
     drawingTimeout = setTimeout(() => {
         performAnalysis();
-    }, 800);
+    }, isAIAvailable() ? CHECK_IN_IDLE_MS : 800);
 }
 
 let lastFeedbackCoverage = 0;
 let feedbackCount = 0;
+let lastCheckInInk = 0;
+
+/**
+ * Count what the user has actually drawn. The canvas starts transparent, so
+ * "not background" has to mean visible, non-white pixels.
+ */
+function measureInk() {
+    const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let inkPixels = 0;
+    const colorVariety = new Set();
+
+    for (let i = 0; i < pixels.length; i += 4) {
+        if (!isBackgroundPixel(pixels, i)) {
+            inkPixels++;
+            colorVariety.add(`${Math.floor(pixels[i]/50)}-${Math.floor(pixels[i+1]/50)}-${Math.floor(pixels[i+2]/50)}`);
+        }
+    }
+
+    return {
+        inkPixels,
+        coverage: (inkPixels / (canvas.width * canvas.height)) * 100,
+        colors: colorVariety.size
+    };
+}
 
 async function performAnalysis() {
     if (!aiEnabled) {
         return;
     }
-    
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const pixels = imageData.data;
-    
-    let drawnPixels = 0;
-    let colorVariety = new Set();
-    
-    for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) {
-            drawnPixels++;
-            const colorKey = `${Math.floor(pixels[i]/50)}-${Math.floor(pixels[i+1]/50)}-${Math.floor(pixels[i+2]/50)}`;
-            colorVariety.add(colorKey);
+
+    const { inkPixels, coverage, colors } = measureInk();
+
+    if (isAIAvailable()) {
+        // Don't talk over someone who is mid-stroke, mid-question, or already waiting on a reply.
+        const userIsBusy = isDrawing || isDrawingShape || activeTurns > 0 || chatInput.value.trim() !== '';
+        if (userIsBusy || Math.abs(inkPixels - lastCheckInInk) < CHECK_IN_MIN_INK_CHANGE) {
+            return;
         }
+        lastCheckInInk = inkPixels;
+        await runAssistTurn(CHECK_IN_NOTE, { checkIn: true });
+        return;
     }
-    
-    const coverage = (drawnPixels / (canvas.width * canvas.height)) * 100;
-    const colors = colorVariety.size;
-    
+
     if (Math.abs(coverage - lastFeedbackCoverage) < 2 && feedbackCount > 0) {
         return; // not enough change
     }
@@ -591,48 +617,8 @@ async function performAnalysis() {
     if (coverage < 0.5) {
         return; // too early
     }
-    
-    if (isServerAvailable()) {
-        try {
-            const canvasImage = getCanvasSnapshot('image/png');
-            const response = await wsClient.requestAnalysis(canvasImage, null);
-            addAIMessage(response);
-            return;
-        } catch (error) {
-            console.error('Realtime analysis failed, falling back:', error);
-        }
-    }
 
-    if (aiService?.isInitialized?.() && !useDemoMode) {
-        try {
-            const canvasImage = getCanvasSnapshot('image/png');
-            
-            const response = await aiService.analyzeCanvas({
-                coverage: coverage.toFixed(2),
-                colorCount: colors
-            }, null, canvasImage);
-            
-            addAIMessage(response);
-            
-            const drawInstructions = aiService.parseDrawingInstructions(response);
-            if (aiCanDraw && drawInstructions.length > 0) {
-                setTimeout(() => {
-                    drawInstructions.forEach(instruction => {
-                        if (instruction.type === 'shape') {
-                            drawAIShape(instruction.shape);
-                        }
-                    });
-                }, 1000);
-            }
-        } catch (error) {
-            console.error('AI Error:', error);
-            addAIMessage('Hmm, I\'m having trouble connecting.');
-            useDemoMode = true;
-            performDemoAnalysis(coverage, colors);
-        }
-    } else {
-        performDemoAnalysis(coverage, colors);
-    }
+    performDemoAnalysis(coverage, colors);
 }
 
 function performDemoAnalysis(coverage, colors) {
@@ -679,9 +665,6 @@ async function handleSendMessage() {
     chatInput.value = '';
     lastUserMessage = message;
     const lowerMsg = message.toLowerCase();
-    
-    const canvasData = getCanvasData();
-    const hasCanvasContent = parseFloat(canvasData.coverage) > 0.5;
     const analysisOnly = isAnalysisOnlyQuery(lowerMsg);
 
     const eraseIntent = !analysisOnly ? detectEraseIntent(lowerMsg) : null;
@@ -690,11 +673,14 @@ async function handleSendMessage() {
         return;
     }
 
-    const needsVision = analysisOnly || shouldUseVision(message) || (hasCanvasContent && referencesDrawing(lowerMsg));
-    const canvasImage = needsVision ? getCanvasSnapshot('image/png') : null;
-    const serverAvailable = isServerAvailable();
-    const aiAvailable = aiService?.isInitialized?.() && !useDemoMode;
+    // With a real model available it sees the canvas and decides, in a single
+    // turn, what to say and what (if anything) to add to the canvas.
+    if (isAIAvailable()) {
+        await runAssistTurn(message);
+        return;
+    }
 
+    // Demo mode: keyword-matched canned responses and shapes.
     let autoDrawPrompt = null;
     if (pendingAIDrawOffer) {
         if (isAffirmativeResponse(lowerMsg)) {
@@ -706,89 +692,13 @@ async function handleSendMessage() {
     }
     
     const isExplicitDrawRequest = !analysisOnly && aiCanDraw && shouldTriggerDrawFromMessage(lowerMsg);
-    
-    if (needsVision) {
-        addAIMessage('👁️ Let me take a look at your canvas...');
-    }
-    
-    if (serverAvailable) {
-        await processMessageWithServer({
-            message,
-            canvasData,
-            canvasImage,
-            analysisOnly,
-            isExplicitDrawRequest,
-            autoDrawPrompt
-        });
+
+    if (!analysisOnly && (isExplicitDrawRequest || autoDrawPrompt)) {
+        handleDrawRequest(autoDrawPrompt || message);
         return;
     }
 
-    if (aiAvailable) {
-        await processMessageWithAI({
-            message,
-            canvasData,
-            canvasImage,
-            analysisOnly,
-            isExplicitDrawRequest,
-            autoDrawPrompt
-        });
-        return;
-    }
-
-    await processMessageWithoutAI({
-        message,
-        analysisOnly,
-        isExplicitDrawRequest,
-        autoDrawPrompt
-    });
-}
-
-function shouldUseVision(message) {
-    const visionKeywords = [
-        'what am i drawing',
-        'what did i draw',
-        'what is this',
-        'what do you see',
-        'can you see',
-        'look at',
-        'analyze',
-        'describe',
-        'what does this look like',
-        'recognize',
-        'identify',
-        'what shape',
-        'what color',
-        'read this',
-        'what equation',
-        'solve this',
-        'what number',
-        'what letter',
-        'what word',
-        'on my canvas',
-        'on the canvas',
-        'in my drawing',
-        'draw with me'
-    ];
-    
-    const lowerMessage = message.toLowerCase();
-    return visionKeywords.some(keyword => lowerMessage.includes(keyword));
-}
-
-/**
- * When the canvas already has content, a much wider range of questions
- * implicitly refer to the drawing ("answer this", "is this right?", "solve it").
- * This lets the AI actually look at the canvas on the FIRST ask instead of
- * needing several rephrasings to hit a hard-coded vision keyword.
- */
-function referencesDrawing(lowerMessage) {
-    const patterns = [
-        /\bthis\b/, /\bthat\b/, /\bthese\b/, /\bthose\b/, /\bit\b/, /\bhere\b/,
-        /\banswer\b/, /\bsolve\b/, /\bsolution\b/, /\bcalculate\b/, /\bevaluate\b/,
-        /\bcorrect\b/, /\bright\b/, /\bwrong\b/, /\bcheck\b/, /\bfix\b/, /\bgrade\b/,
-        /\bequation\b/, /\bproblem\b/, /\bdrawing\b/, /\bsketch\b/, /\bpicture\b/,
-        /\bhelp\b/, /[=?]/
-    ];
-    return patterns.some(pattern => pattern.test(lowerMessage));
+    processUserMessage(message);
 }
 
 function isAnalysisOnlyQuery(lowerMessage) {
@@ -966,28 +876,6 @@ function detectEraseIntent(lowerMessage) {
     return null;
 }
 
-function getCanvasData() {
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const pixels = imageData.data;
-    let drawnPixels = 0;
-    let colorVariety = new Set();
-    
-    for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) {
-            drawnPixels++;
-            const colorKey = `${Math.floor(pixels[i]/50)}-${Math.floor(pixels[i+1]/50)}-${Math.floor(pixels[i+2]/50)}`;
-            colorVariety.add(colorKey);
-        }
-    }
-    
-    const coverage = (drawnPixels / (canvas.width * canvas.height)) * 100;
-    
-    return {
-        coverage: coverage.toFixed(2),
-        colorCount: colorVariety.size
-    };
-}
-
 sendButton.addEventListener('click', handleSendMessage);
 chatInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
@@ -1004,11 +892,7 @@ function processUserMessage(message) {
         } else if (lowerMessage.includes('help') || lowerMessage.includes('how')) {
             handleHelpRequest(message);
         } else if ((lowerMessage.includes('draw') || lowerMessage.includes('show') || lowerMessage.includes('make')) && aiCanDraw) {
-            if (aiService?.isInitialized?.() && !useDemoMode) {
-                handleCollaborativeDrawRequest(message);
-            } else {
-                handleDrawRequest(message);
-            }
+            handleDrawRequest(message);
         } else if (lowerMessage.includes('color') || lowerMessage.includes('colour')) {
             handleColorAdvice();
         } else if (lowerMessage.includes('improve') || lowerMessage.includes('better') || lowerMessage.includes('tip')) {
@@ -1021,179 +905,6 @@ function processUserMessage(message) {
     }, 300);
 }
 
-/**
- * Detects when the AI's reply commits to putting something on the canvas
- * ("I'll write these answers now", "let me add a sun", "drawing it for you").
- * When it does and the user hasn't disabled AI drawing, we follow through with
- * a real collaborative draw so the canvas actually updates.
- */
-function aiCommittedToDraw(response) {
-    const lower = response.toLowerCase();
-    const patterns = [
-        /i['’]ll\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
-        /i\s+will\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
-        /let me\s+(draw|write|add|sketch|put|place|fill|mark|label)/,
-        /i['’]m\s+(drawing|writing|adding|sketching|putting|placing)/,
-        /(draw|write|add|sketch|put|place)(ing)?\s+(it|this|that|these|them|the\s+answers?)\s+(for you|now|on|onto)/,
-        /(on|onto)\s+(the|your)\s+canvas\s+(now|for you)/,
-        /directly\s+onto\s+(the|your)\s+canvas/,
-        /here['’]s\s+what\s+i['’]ll\s+(draw|add)/
-    ];
-    return patterns.some(pattern => pattern.test(lower));
-}
-
-/**
- * After a normal chat reply, decide whether to actually render something on the
- * canvas. Fires when the AI committed to drawing, or when the user explicitly
- * asked for the result to be written on the canvas. Routes through the realtime
- * server when connected, otherwise the direct collaborative-draw path.
- * Returns true when a draw was triggered.
- */
-async function maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt }) {
-    if (analysisOnly || !aiCanDraw || autoDrawPrompt) {
-        return false;
-    }
-
-    const lower = message.toLowerCase();
-    const wantsCanvasWrite = /\bwrite\b/.test(lower) || /on(to)?\s+(the\s+|your\s+)?canvas/.test(lower);
-
-    if (!wantsCanvasWrite && !aiCommittedToDraw(response)) {
-        return false;
-    }
-
-    const drawPrompt = `Write the following on the canvas as a clean, LEFT-aligned list placed in an empty area (do not write over my existing work). Keep it short and legible:\n\n${response}`;
-
-    if (isServerAvailable()) {
-        await handleServerDrawRequest(drawPrompt);
-    } else {
-        await handleCollaborativeDrawRequest(drawPrompt);
-    }
-    return true;
-}
-
-async function processMessageWithServer({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt }) {
-    if (isExplicitDrawRequest) {
-        await handleServerDrawRequest(message);
-        return;
-    }
-
-    try {
-        const includeCanvas = Boolean(canvasImage);
-        const response = await wsClient.requestChat(message, includeCanvas, canvasImage);
-        addAIMessage(response);
-
-        if (analysisOnly) {
-            return;
-        }
-
-        const drew = await maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt });
-
-        if (!drew) {
-            const drawInstructions = aiService?.parseDrawingInstructions?.(response) || [];
-            if (aiCanDraw && drawInstructions.length > 0) {
-                setTimeout(() => {
-                    drawInstructions.forEach(instruction => {
-                        if (instruction.type === 'shape') {
-                            drawAIShape(instruction.shape);
-                        }
-                    });
-                }, 1000);
-            }
-        }
-
-        if (autoDrawPrompt) {
-            await handleServerDrawRequest(autoDrawPrompt);
-        }
-    } catch (error) {
-        console.error('Realtime chat failed, falling back:', error);
-
-        if (aiService?.isInitialized?.() && !useDemoMode) {
-            await processMessageWithAI({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt });
-            return;
-        }
-
-        addAIMessage('⚠️ I lost my connection to the server. Reconnecting—please try again in a moment.');
-        await processMessageWithoutAI({ message, analysisOnly, isExplicitDrawRequest, autoDrawPrompt });
-    }
-}
-
-async function handleServerDrawRequest(message) {
-    lastDrawPrompt = message;
-    addAIMessage('🎨 Let me draw that for you...');
-
-    try {
-        const canvasImage = getCanvasSnapshot('image/png');
-        const fullPrompt = `${message}
-
-${buildCanvasPlacementHint(getDrawMode(message))}`;
-        const drawingData = await wsClient.requestAIDrawing(fullPrompt, canvasImage);
-        if (drawingData?.streamed) {
-            return; // strokes were rendered live as they streamed in
-        }
-        await executeAIDrawing(drawingData, message);
-    } catch (error) {
-        console.error('Realtime drawing failed, falling back:', error);
-        await handleCollaborativeDrawRequest(message);
-    }
-}
-
-async function processMessageWithAI({ message, canvasData, canvasImage, analysisOnly, isExplicitDrawRequest, autoDrawPrompt }) {
-    if (isExplicitDrawRequest) {
-        await handleCollaborativeDrawRequest(message);
-        return;
-    }
-
-    try {
-        const response = await aiService.sendMessage(message, canvasData, canvasImage);
-        addAIMessage(response);
-
-        if (analysisOnly) {
-            return;
-        }
-
-        const drew = await maybeDrawAfterResponse({ message, response, analysisOnly, autoDrawPrompt });
-
-        if (!drew) {
-            const drawInstructions = aiService.parseDrawingInstructions(response);
-            if (aiCanDraw && drawInstructions.length > 0) {
-                setTimeout(() => {
-                    drawInstructions.forEach(instruction => {
-                        if (instruction.type === 'shape') {
-                            drawAIShape(instruction.shape);
-                        }
-                    });
-                }, 1000);
-            }
-        }
-
-        if (autoDrawPrompt) {
-            await handleCollaborativeDrawRequest(autoDrawPrompt);
-        }
-    } catch (error) {
-        console.error('AI Error:', error);
-        addAIMessage('⚠️ I\'m having trouble connecting to my AI brain. Please check your API key or switch to demo mode.');
-
-        if (!analysisOnly && (isExplicitDrawRequest || autoDrawPrompt)) {
-            const promptToUse = autoDrawPrompt || message;
-            await handleCollaborativeDrawRequest(promptToUse);
-        }
-    }
-}
-
-async function processMessageWithoutAI({ message, analysisOnly, isExplicitDrawRequest, autoDrawPrompt }) {
-    if (!analysisOnly && isExplicitDrawRequest) {
-        await handleCollaborativeDrawRequest(message);
-        return;
-    }
-
-    if (!analysisOnly && autoDrawPrompt) {
-        await handleCollaborativeDrawRequest(autoDrawPrompt);
-        return;
-    }
-
-    processUserMessage(message);
-}
-
 function analyzeCurrentDrawing() {
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const pixels = imageData.data;
@@ -1201,7 +912,7 @@ function analyzeCurrentDrawing() {
     let colorVariety = new Set();
     
     for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) {
+        if (!isBackgroundPixel(pixels, i)) {
             drawnPixels++;
             const colorKey = `${Math.floor(pixels[i]/50)}-${Math.floor(pixels[i+1]/50)}-${Math.floor(pixels[i+2]/50)}`;
             colorVariety.add(colorKey);
@@ -1592,16 +1303,16 @@ document.getElementById('toggleChat').addEventListener('click', function() {
     }
 });
 
-// Real-time AI Vision System
+// Canned tips for demo mode only; with a real model connected they would just be noise.
 setInterval(() => {
-    if (!aiEnabled) return;
+    if (!aiEnabled || isAIAvailable()) return;
     
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const pixels = imageData.data;
     let drawnPixels = 0;
     
     for (let i = 0; i < pixels.length; i += 4) {
-        if (pixels[i] < 250 || pixels[i + 1] < 250 || pixels[i + 2] < 250) {
+        if (!isBackgroundPixel(pixels, i)) {
             drawnPixels++;
         }
     }
@@ -1695,40 +1406,6 @@ function shouldSkipLargeFillRect(width, height) {
     const area = clampedWidth * clampedHeight;
     const canvasArea = canvas.width * canvas.height;
     return area > canvasArea * 0.6;
-}
-
-function shouldAllowTextCommand(cmd, originalPrompt = '', description = '') {
-    const text = (cmd.text || '').trim();
-    if (!text) {
-        return false;
-    }
-
-    if (cmd.forceText === true) {
-        return true;
-    }
-
-    const lowerPrompt = originalPrompt.toLowerCase();
-    const lowerDescription = (description || '').toLowerCase();
-    const textHints = ['write', 'text', 'label', 'word', 'words', 'caption', 'annotate', 'spell', 'equation', 'solution', 'answer', 'formula'];
-
-    if (textHints.some(hint => lowerPrompt.includes(hint) || lowerDescription.includes(hint))) {
-        return true;
-    }
-
-    if (/[0-9=+\-*/^]/.test(text) || /[∫Σπ∞√≈≠≤≥]/.test(text)) {
-        return true;
-    }
-
-    if (/^(yes|ok|okay|done|sure|hi|hello|thanks|thank you)$/i.test(text)) {
-        return false;
-    }
-
-    const words = text.split(/\s+/).filter(Boolean);
-    if (words.length <= 3 && /^[a-z\s]+$/i.test(text)) {
-        return false;
-    }
-
-    return true;
 }
 
 function isBackgroundPixel(data, index) {
@@ -1865,265 +1542,223 @@ function getContentBounds(sampleStep = 4) {
 }
 
 /**
- * Decide whether a draw request wants WRITTEN text (answers/labels) or an
- * actual SHAPE drawing. "draw a boat" should produce shapes, not the words
- * "a boat". Answer/label/write requests should produce text.
+ * Render a single AI draw command onto the canvas. `turn` carries what the
+ * canvas looked like before the AI started, so text can avoid the user's marks.
  */
-function getDrawMode(prompt = '') {
-    const p = String(prompt).toLowerCase();
-    if (p.includes('write the following')) return 'text';
-    const textIntent = /\b(write|answer|answers|solve|solution|label|equation|formula|spell|caption|annotate|note)\b/.test(p);
-    return textIntent ? 'text' : 'shapes';
-}
-
-/**
- * Build placement guidance for the AI. The empty-area targeting is shared, but
- * text mode asks for a left-aligned list of text, while shapes mode asks for
- * actual drawn shapes and explicitly forbids writing the subject as words.
- */
-function buildCanvasPlacementHint(mode = 'text') {
-    const bounds = getContentBounds();
-    const w = canvas.width;
-    const h = canvas.height;
-    const round = value => Math.round(value);
-
-    if (!bounds.hasContent) {
-        const base = `Placement guidance: the canvas is ${w}x${h}px and currently empty. Center your work and keep it within 80% of the canvas, at least 20px from every edge.`;
-        if (mode === 'shapes') {
-            return `${base} Render the subject using "path"/"line"/"circle"/"rect" shapes and colors — do NOT write its name or description as text.`;
-        }
-        return base;
-    }
-
-    const rightSpace = w - bounds.maxX;
-    const bottomSpace = h - bounds.maxY;
-    const pad = 28;
-
-    let area;
-    if (rightSpace >= 180) {
-        const startX = Math.min(w - 160, bounds.maxX + pad);
-        const startY = Math.max(24, bounds.minY);
-        area = `to the RIGHT of the existing work — start around x=${round(startX)}, y=${round(startY)} and grow downward`;
-    } else if (bottomSpace >= 140) {
-        const startX = Math.max(24, bounds.minX);
-        const startY = Math.min(h - 120, bounds.maxY + pad);
-        area = `BELOW the existing work — start around x=${round(startX)}, y=${round(startY)} and grow downward`;
-    } else {
-        area = `in the largest empty margin of the canvas, away from the existing marks`;
-    }
-
-    const common = [
-        `Placement guidance: the canvas is ${w}x${h}px.`,
-        `The existing artwork occupies roughly (${round(bounds.minX)},${round(bounds.minY)}) to (${round(bounds.maxX)},${round(bounds.maxY)}).`,
-        `Place your additions ${area}.`,
-        `Do NOT overlap, cover, or draw on top of the existing marks, and stay at least 20px from every edge.`
-    ];
-
-    if (mode === 'shapes') {
-        common.push(`Render the subject using "path"/"line"/"circle"/"rect" shapes with colors. Do NOT write text, labels, or captions.`);
-    } else {
-        common.push(`Write them as a tidy, LEFT-aligned vertical list (about 36px between lines).`);
-        common.push(`Use "action":"text" with "snapToExisting": false, "align":"left", and absolute coordinates.`);
-    }
-
-    return common.join(' ');
-}
-
-/**
- * Render a single AI draw command onto the canvas. Shared by the batch
- * (non-streaming) path and the live streaming path.
- */
-function renderDrawCommand(cmd, isRelative) {
+function renderDrawCommand(cmd, turn) {
     switch (cmd.action) {
         case 'path':
-            drawAIPath(cmd, isRelative);
+            drawAIPath(cmd, false);
             break;
         case 'circle':
-            drawAICircle(cmd, isRelative);
+            drawAICircle(cmd, false);
             break;
         case 'rect':
-            drawAIRect(cmd, isRelative);
+            drawAIRect(cmd, false);
             break;
         case 'text':
-            drawAIText(cmd, isRelative);
+            drawAIText(cmd, turn);
             break;
         case 'line':
-            drawAILine(cmd, isRelative);
+            drawAILine(cmd, false);
             break;
         default:
             console.warn('Unknown drawing action:', cmd.action);
     }
 }
 
-function onStreamDrawStart(msg) {
-    const bounds = getContentBounds();
-    const mode = getDrawMode(lastDrawPrompt);
-    activeStreamDraw = {
-        isRelative: msg.coordinateSystem === 'relative',
-        description: msg.description || '',
-        prompt: lastDrawPrompt || '',
-        mode,
-        count: 0,
-        textLayout: (mode === 'text' && bounds.hasContent)
-            ? { anchor: computeTextAnchor(bounds), line: 0 }
-            : null
+const AI_GRID_STEP = 50;
+
+/**
+ * The snapshot the model sees: the canvas on white, over a faint labelled
+ * coordinate grid. The grid is only in this copy, never on the real canvas.
+ * It lets the model read off where things are and how big the handwriting is,
+ * so what it adds lands where it belongs.
+ */
+function getSnapshotForAI() {
+    const snapshot = document.createElement('canvas');
+    snapshot.width = canvas.width;
+    snapshot.height = canvas.height;
+    const g = snapshot.getContext('2d');
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, snapshot.width, snapshot.height);
+
+    g.lineWidth = 1;
+    g.font = '10px sans-serif';
+    g.textBaseline = 'top';
+    g.fillStyle = 'rgba(40, 90, 220, 0.85)';
+    const gridLine = (x1, y1, x2, y2, major) => {
+        g.strokeStyle = major ? 'rgba(60, 120, 255, 0.32)' : 'rgba(60, 120, 255, 0.14)';
+        g.beginPath();
+        g.moveTo(x1, y1);
+        g.lineTo(x2, y2);
+        g.stroke();
     };
-    if (msg.description) {
-        addAIMessage(`✏️ ${msg.description}`);
+    for (let x = AI_GRID_STEP; x < snapshot.width; x += AI_GRID_STEP) {
+        const major = x % (AI_GRID_STEP * 2) === 0;
+        gridLine(x + 0.5, 0, x + 0.5, snapshot.height, major);
+        if (major) g.fillText(String(x), x + 3, 2);
     }
+    for (let y = AI_GRID_STEP; y < snapshot.height; y += AI_GRID_STEP) {
+        const major = y % (AI_GRID_STEP * 2) === 0;
+        gridLine(0, y + 0.5, snapshot.width, y + 0.5, major);
+        if (major) g.fillText(String(y), 2, y + 3);
+    }
+
+    g.drawImage(canvas, 0, 0);
+    return snapshot.toDataURL('image/png');
 }
 
-function onStreamDrawCommand(msg) {
-    const cmd = msg.command;
-    if (!cmd || typeof cmd !== 'object') return;
-
-    if (!activeStreamDraw) {
-        activeStreamDraw = { isRelative: false, description: '', prompt: lastDrawPrompt || '', mode: getDrawMode(lastDrawPrompt), count: 0, textLayout: null };
+function describeCanvasForAI(canDraw) {
+    const bounds = getContentBounds();
+    const facts = [`The canvas is ${canvas.width}x${canvas.height}px.`];
+    facts.push(bounds.hasContent
+        ? `The existing marks span x ${bounds.minX}-${bounds.maxX} and y ${bounds.minY}-${bounds.maxY}.`
+        : 'It is currently empty.');
+    facts.push(`The user's pen is ${currentColor}, ${brushSize}px wide.`);
+    if (!canDraw) {
+        facts.push('AI drawing is turned off for this turn.');
     }
+    return facts.join(' ');
+}
 
-    if (cmd.action === 'text') {
-        if (activeStreamDraw.mode === 'shapes' && cmd.forceText !== true) {
-            return;
-        }
-        if (!shouldAllowTextCommand(cmd, activeStreamDraw.prompt, activeStreamDraw.description)) {
-            return;
-        }
-    }
+/**
+ * One AI turn: send the user's words (or a check-in note) with a snapshot of
+ * the canvas, show the reply in chat, and render canvas commands as they
+ * arrive. Goes through the realtime server when connected, otherwise straight
+ * to OpenAI with the key saved in this browser.
+ */
+async function runAssistTurn(content, { checkIn = false } = {}) {
+    if (!checkIn) userTurnSeq++;
+    const startedAt = userTurnSeq;
+    // A check-in overtaken by a real message is dropped rather than talking over it.
+    const isStale = () => checkIn && startedAt !== userTurnSeq;
 
+    const turn = {
+        canDraw: aiCanDraw && !checkIn,
+        ink: ctx.getImageData(0, 0, canvas.width, canvas.height),
+        placedText: [],
+        drawn: 0,
+        replied: false
+    };
+    const payload = {
+        content,
+        context: describeCanvasForAI(turn.canDraw),
+        canvasImage: getSnapshotForAI()
+    };
+    const thinking = checkIn ? null : addMessage('…', false);
+    const handlers = {
+        onReply: (text) => {
+            if (isStale()) return;
+            thinking?.remove();
+            turn.replied = true;
+            addAIMessage(text);
+        },
+        onCommand: (cmd) => {
+            if (isStale() || !turn.canDraw || !cmd || typeof cmd !== 'object') return;
+            try {
+                ctx.save();
+                ctx.globalCompositeOperation = 'source-over';
+                renderDrawCommand(cmd, turn);
+                turn.drawn++;
+            } catch (error) {
+                console.error('Error rendering AI command:', error, cmd);
+            } finally {
+                ctx.restore();
+            }
+        }
+    };
+
+    activeTurns++;
     try {
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        renderDrawCommand(applyTextLayout(cmd, activeStreamDraw.textLayout), activeStreamDraw.isRelative);
-        ctx.restore();
-        activeStreamDraw.count++;
-    } catch (error) {
-        console.error('Error rendering streamed command:', error, cmd);
-    }
-}
+        let failure = null;
 
-function onStreamDrawEnd() {
-    if (activeStreamDraw && activeStreamDraw.count > 0) {
-        saveState();
-        addAIMessage('Done! What do you think? Want to add to it?');
-    }
-    activeStreamDraw = null;
-}
-
-/**
- * Compute a deterministic anchor for writing AI text (answers/labels) in the
- * empty area of the canvas. The MODEL decides what to write; the CLIENT decides
- * where — so answers never overlap the user's handwriting regardless of the
- * coordinates the model guesses.
- */
-function computeTextAnchor(bounds = getContentBounds()) {
-    const w = canvas.width;
-    const h = canvas.height;
-    const margin = 24;
-    const lineHeight = 40;
-
-    if (!bounds.hasContent) {
-        return { x: margin, y: margin + 16, lineHeight };
-    }
-
-    const rightSpace = w - bounds.maxX;
-    if (rightSpace >= 150) {
-        return {
-            x: Math.min(w - margin - 30, bounds.maxX + margin),
-            y: Math.max(margin + 16, bounds.minY + 16),
-            lineHeight
-        };
-    }
-
-    const bottomSpace = h - bounds.maxY;
-    if (bottomSpace >= 90) {
-        return {
-            x: Math.max(margin, bounds.minX),
-            y: Math.min(h - margin, bounds.maxY + margin),
-            lineHeight
-        };
-    }
-
-    return { x: margin, y: margin + 16, lineHeight };
-}
-
-/**
- * If this is a text command and we have a layout anchor, override the model's
- * coordinates so the text is placed in the clean empty area as a left-aligned
- * list. Non-text commands pass through unchanged. Mutates layout.line.
- */
-function applyTextLayout(cmd, layout) {
-    if (!layout || cmd.action !== 'text') {
-        return cmd;
-    }
-    const positioned = {
-        ...cmd,
-        x: layout.anchor.x,
-        y: layout.anchor.y + layout.line * layout.anchor.lineHeight,
-        align: 'left',
-        baseline: 'middle',
-        snapToExisting: false,
-        coordinateSystem: 'absolute',
-        relative: false
-    };
-    layout.line++;
-    return positioned;
-}
-
-async function executeAIDrawing(drawingData, originalPrompt = '') {
-    if (!drawingData?.commands?.length) {
-        console.warn('No drawing commands to execute');
-        return;
-    }
-
-    if (drawingData.description) {
-        addAIMessage(`✏️ ${drawingData.description}`);
-    }
-
-    const isRelative = drawingData.coordinateSystem === 'relative';
-    const drawMode = getDrawMode(originalPrompt);
-    const commandsToRun = drawingData.commands.filter(cmd => {
-        if (cmd.action === 'text') {
-            if (drawMode === 'shapes' && cmd.forceText !== true) {
-                console.info('Skipping AI text command in shape-drawing mode:', cmd);
-                return false;
-            }
-            if (!shouldAllowTextCommand(cmd, originalPrompt, drawingData.description)) {
-                console.info('Skipping AI text command for clarity:', cmd);
-                return false;
+        if (isServerAvailable()) {
+            try {
+                await wsClient.requestAssist(payload, handlers);
+                return;
+            } catch (error) {
+                failure = error;
             }
         }
-        return true;
+
+        // Only retry directly if the server produced nothing, so nothing is drawn twice.
+        if (!turn.replied && turn.drawn === 0 && aiService?.isInitialized?.() && !useDemoMode) {
+            try {
+                await aiService.assist(payload, handlers);
+                return;
+            } catch (error) {
+                failure = error;
+            }
+        }
+
+        console.error('AI turn failed:', failure);
+        if (!checkIn) {
+            addAIMessage('⚠️ I couldn\'t reach the AI just now. Check that the server is running (or your API key) and try again.');
+        }
+    } finally {
+        activeTurns--;
+        thinking?.remove();
+        if (turn.drawn > 0) {
+            saveState();
+        }
+        if (!checkIn) {
+            // The AI has just seen (and maybe added to) the canvas; no need to check in on it again.
+            lastCheckInInk = measureInk().inkPixels;
+        }
+    }
+}
+
+function boxTouchesInk(ink, x, y, w, h) {
+    // Leave a readable gap beside neighbouring marks (about a quarter of the
+    // text height), but allow lines of writing to sit close above and below.
+    const padX = Math.max(4, h * 0.25);
+    const padY = 4;
+    const x0 = Math.max(0, Math.floor(x - padX));
+    const x1 = Math.min(ink.width, Math.ceil(x + w + padX));
+    const y0 = Math.max(0, Math.floor(y - padY));
+    const y1 = Math.min(ink.height, Math.ceil(y + h + padY));
+    let hits = 0;
+
+    for (let py = y0; py < y1; py += 2) {
+        for (let px = x0; px < x1; px += 2) {
+            if (!isBackgroundPixel(ink.data, (py * ink.width + px) * 4) && ++hits > 2) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/**
+ * Keep a text box where the model put it if that spot is clear; otherwise
+ * slide it to the nearest clear spot, preferring to stay on the same line.
+ * "Clear" means off the user's marks and off text already placed this turn.
+ */
+function findClearSpot(box, turn) {
+    const margin = 8;
+    const maxX = Math.max(margin, canvas.width - margin - box.w);
+    const maxY = Math.max(margin, canvas.height - margin - box.h);
+    const clamp = (x, y) => ({
+        x: Math.min(Math.max(margin, x), maxX),
+        y: Math.min(Math.max(margin, y), maxY)
     });
+    const start = clamp(box.x, box.y);
+    if (!turn) return start;
 
-    if (commandsToRun.length === 0) {
-        console.warn('All drawing commands were filtered out; nothing to execute');
-        return;
-    }
+    const isClear = ({ x, y }) => !boxTouchesInk(turn.ink, x, y, box.w, box.h)
+        && !turn.placedText.some(p => x < p.x + p.w && p.x < x + box.w && y < p.y + p.h && p.y < y + box.h);
 
-    // The model is unreliable at picking coordinates, so place any text in the
-    // empty area ourselves as a clean left-aligned list (text mode only).
-    const bounds = getContentBounds();
-    const textLayout = (drawMode === 'text' && bounds.hasContent)
-        ? { anchor: computeTextAnchor(bounds), line: 0 }
-        : null;
+    if (isClear(start)) return start;
 
-    for (const cmd of commandsToRun) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-
-        try {
-            ctx.save();
-            ctx.globalCompositeOperation = 'source-over';
-
-            renderDrawCommand(applyTextLayout(cmd, textLayout), isRelative);
-
-            ctx.restore();
-        } catch (error) {
-            console.error('Error executing drawing command:', error, cmd);
+    const reach = Math.max(canvas.width, canvas.height);
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1]]) {
+        for (let distance = 10; distance <= reach; distance += 10) {
+            const candidate = clamp(start.x + dx * distance, start.y + dy * distance);
+            if (isClear(candidate)) return candidate;
         }
     }
-
-    saveState();
-    addAIMessage('Done! What do you think? Want to add to it?');
+    return start;
 }
 
 function drawAIPath(cmd, isRelative) {
@@ -2160,7 +1795,7 @@ function drawAIPath(cmd, isRelative) {
     let centroidX = sumX / resolvedPoints.length;
     let centroidY = sumY / resolvedPoints.length;
 
-    const shouldSnap = cmd.snapToExisting !== false && (cmd.snapToExisting === true || cmd.fill);
+    const shouldSnap = cmd.snapToExisting === true;
 
     if (shouldSnap) {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -2214,7 +1849,7 @@ function drawAICircle(cmd, isRelative) {
     let cx = resolveCoordinate(cmd.x || 0, 'x', useRelative);
     let cy = resolveCoordinate(cmd.y || 0, 'y', useRelative);
 
-    const shouldSnap = cmd.snapToExisting !== false && (cmd.snapToExisting === true || cmd.fill);
+    const shouldSnap = cmd.snapToExisting === true;
 
     if (shouldSnap) {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -2250,14 +1885,15 @@ function drawAIRect(cmd, isRelative) {
     const useRelative = isRelative || cmd.relative === true || cmd.coordinateSystem === 'relative';
     ctx.strokeStyle = cmd.color || '#000000';
     ctx.fillStyle = cmd.color || '#000000';
-    ctx.lineWidth = cmd.width || 3;
+    // "width" is the rectangle's width, so the outline thickness has its own field.
+    ctx.lineWidth = cmd.lineWidth || 3;
 
     const w = normalizeLength(cmd.width || 50, canvas.width);
     const h = normalizeLength(cmd.height || 50, canvas.height);
     let x = resolveCoordinate(cmd.x || 0, 'x', useRelative);
     let y = resolveCoordinate(cmd.y || 0, 'y', useRelative);
 
-    const shouldSnap = cmd.snapToExisting !== false && (cmd.snapToExisting === true || cmd.fill);
+    const shouldSnap = cmd.snapToExisting === true;
 
     if (shouldSnap) {
         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -2290,37 +1926,38 @@ function drawAIRect(cmd, isRelative) {
     ctx.strokeRect(x, y, w, h);
 }
 
-function drawAIText(cmd, isRelative) {
-    const useRelative = isRelative || cmd.relative === true || cmd.coordinateSystem === 'relative';
+// Thin handwriting faces sit best next to pen strokes; the weight is ignored where unavailable.
+const AI_TEXT_FONT = '"Noteworthy", "Segoe Print", "Chalkboard SE", "Comic Sans MS", cursive';
+const AI_TEXT_WEIGHT = 300;
+
+/**
+ * Write AI text in a handwriting font. `x` is the left edge, `y` the vertical
+ * centre of the line and `size` the height of a digit, so the model can match
+ * the user's own writing by reading those straight off the snapshot.
+ */
+function drawAIText(cmd, turn) {
+    const text = String(cmd.text ?? '').trim();
+    if (!text) return;
+
+    const digitHeight = Math.min(Math.max(10, Number(cmd.size) || 28), canvas.height * 0.4);
+    // Pick the font size that makes a digit exactly `digitHeight` tall in this font.
+    ctx.font = `${AI_TEXT_WEIGHT} 100px ${AI_TEXT_FONT}`;
+    const ascentAt100 = ctx.measureText('0').actualBoundingBoxAscent || 70;
+    ctx.font = `${AI_TEXT_WEIGHT} ${Math.round(digitHeight * 100 / ascentAt100)}px ${AI_TEXT_FONT}`;
+
+    const box = {
+        x: Number(cmd.x) || 0,
+        y: (Number(cmd.y) || 0) - digitHeight / 2,
+        w: ctx.measureText(text).width,
+        h: digitHeight
+    };
+    const spot = findClearSpot(box, turn);
+    turn?.placedText.push({ ...box, ...spot });
+
     ctx.fillStyle = cmd.color || '#000000';
-    const fontSizeRaw = Number(cmd.size) || 20;
-    const fontSize = Math.min(Math.max(10, fontSizeRaw), Math.min(canvas.width, canvas.height) * 0.25);
-    const fontFamily = typeof cmd.font === 'string' ? cmd.font : 'Arial';
-    ctx.font = `${fontSize}px ${fontFamily}`;
-    ctx.textAlign = cmd.align || 'center';
-    ctx.textBaseline = cmd.baseline || 'middle';
-
-    let textX = resolveCoordinate(cmd.x || 0, 'x', useRelative);
-    let textY = resolveCoordinate(cmd.y || 0, 'y', useRelative);
-
-    if (cmd.snapToExisting) {
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const snappedCenter = snapPointToExistingContent(imageData, textX, textY, fontSize * 1.2, {
-            minSamples: cmd.minSamples || 15,
-            maxShift: cmd.maxShift || Math.max(fontSize * 2, 40)
-        });
-
-        if (snappedCenter) {
-            textX = snappedCenter.x;
-            textY = snappedCenter.y;
-        }
-    }
-
-    ctx.fillText(
-        cmd.text || '', 
-        Math.min(Math.max(0, textX), canvas.width),
-        Math.min(Math.max(0, textY), canvas.height)
-    );
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillText(text, spot.x, spot.y + digitHeight);
 }
 
 function drawAILine(cmd, isRelative) {
@@ -2360,31 +1997,6 @@ function drawAILine(cmd, isRelative) {
     ctx.moveTo(clampX(startX), clampY(startY));
     ctx.lineTo(clampX(endX), clampY(endY));
     ctx.stroke();
-}
-
-async function handleCollaborativeDrawRequest(message) {
-    if (!aiService?.isInitialized?.() || useDemoMode) {
-        handleDrawRequest(message);
-        return;
-    }
-
-    addAIMessage('🎨 Let me draw that for you...');
-    
-    try {
-        const canvasImage = getCanvasSnapshot('image/png');
-        const fullPrompt = `${message}
-
-${buildCanvasPlacementHint(getDrawMode(message))}`;
-        
-        const drawingData = await aiService.requestCollaborativeDraw(fullPrompt, canvasImage);
-        
-    await executeAIDrawing(drawingData, message);
-        
-    } catch (error) {
-        console.error('Collaborative drawing error:', error);
-        addAIMessage('⚠️ I had trouble creating that drawing. Let me try a simpler approach...');
-        handleDrawRequest(message);
-    }
 }
 
 console.log('Work With Me - AI Drawing Assistant loaded!');

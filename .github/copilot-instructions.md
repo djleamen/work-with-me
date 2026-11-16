@@ -19,7 +19,7 @@ The project consists of two main components:
    - Node.js/Express backend
    - WebSocket server for real-time communication
    - OpenAI API integration for AI features
-   - Custom JSON message protocol (`canvas_update`, `analyze_canvas`, `chat_message`, …)
+   - Custom JSON message protocol (`assist` → `assist_reply` / `assist_command` / `assist_done`, …)
    - Files: `server.js`, `test-client.js`
 
 ### Technology Stack
@@ -209,10 +209,8 @@ The frontend uses vanilla JS (no frameworks) to:
 
 ## Environment Variables
 - `OPENAI_API_KEY`: Required for AI features (in `.env`)
-- `OPENAI_MODEL`: Optional text-chat model, defaults to `gpt-5.5`
-- `OPENAI_VISION_MODEL`: Optional vision model for canvas analysis & drawing, defaults to `gpt-5.5`
+- `OPENAI_VISION_MODEL`: Optional vision-capable model used for every assistant turn (chat + drawing), defaults to `gpt-5.5`
 - `OPENAI_REASONING_EFFORT`: Optional reasoning effort for GPT-5/o-series models (`none`|`low`|`medium`|`high`), defaults to `low`
-- `AI_TEMPERATURE`: Optional, defaults to 0.7
 
 ## Dependencies Management
 - Keep dependencies minimal and well-justified

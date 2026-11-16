@@ -23,9 +23,10 @@ ws.on('open', () => {
   setTimeout(() => {
     console.log('Sending chat message...');
     ws.send(JSON.stringify({
-      type: 'chat_message',
+      type: 'assist',
+      turnId: 'test-1',
       content: 'Hello! Can you help me?',
-      includeCanvas: false
+      context: 'The canvas is 800x600px. It is currently empty.'
     }));
   }, 2000);
 });
@@ -35,7 +36,7 @@ ws.on('message', (data) => {
   console.log('Received:', message.type);
   console.log('Content:', message.content || message.message || 'N/A');
   
-  if (message.type === 'ai_response') {
+  if (message.type === 'assist_done' || message.type === 'assist_error') {
     setTimeout(() => {
       console.log('Closing connection...');
       ws.close();
