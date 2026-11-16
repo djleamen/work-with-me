@@ -29,10 +29,15 @@ function isOriginAllowed(origin) {
   return !origin || LOCAL_ORIGIN.test(origin) || allowedOrigins.includes(origin);
 }
 
+// Canvas snapshots are the largest messages a client sends (a few MB at most).
+// ws accepts up to 100 MiB per message by default, so cap it to match the HTTP body limit.
+const MAX_WS_PAYLOAD_BYTES = 10 * 1024 * 1024;
+
 // Reject disallowed origins during the HTTP Upgrade handshake,
 // before a WebSocket (and session) is ever created
 const wss = new WebSocketServer({
   server,
+  maxPayload: MAX_WS_PAYLOAD_BYTES,
   verifyClient: ({ origin }, done) => {
     if (isOriginAllowed(origin)) {
       done(true);
